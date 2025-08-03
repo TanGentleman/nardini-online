@@ -28,6 +28,24 @@ import tempfile
 import modal
 import zipfile 
 from uuid import uuid4
+import logging
+
+# ---------------------- Environment configuration ---------------------- #
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("nardini_backend")
+
+# Configurable parameters with env-variable overrides
+VOLUME_DIR = Path(os.getenv("VOLUME_DIR", "/data"))
+VOLUME_NAME = os.getenv("VOLUME_NAME", "nardini_volume")
+TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS", "43200"))  # default 12h
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
+MAX_FILE_SIZE = MAX_UPLOAD_MB * 1024 * 1024  # bytes
+WORKER_COUNT = int(os.getenv("WORKER_COUNT", "16"))
+# ---------------------------------------------------------------------- #
 
 # Lightweight web image for FastAPI
 web_image = (
@@ -50,8 +68,7 @@ nardini_image = (
 
 # Create a Modal application with shared volume
 app = modal.App("nardini-backend")
-VOLUME_DIR = Path("/data")
-vol = modal.Volume.from_name("nardini_volume", create_if_missing=True)
+vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 # Web image imports (lightweight)
 with web_image.imports():
@@ -155,7 +172,7 @@ def mergeZips(zipList, destination_filepath):
                       # Read the content of sequences.tsv from within the zip
                       with zip_ref.open(file_info) as seq_tsv_file:
                           seqTSVContent = seq_tsv_file.read().decode('utf-8') # Decode bytes to string
-                          print(f'Processing sequences.tsv from {zipPath}')
+                          logger.info(f"Processing sequences.tsv from {zipPath}")
                           addtoSeqTSV(masterTSVPath, seqTSVContent) # Pass content to helper function
 
         # Write the content of the master_sequences.tsv into the zip while it's open
@@ -236,7 +253,7 @@ def process_single_sequence(
     volumes={str(VOLUME_DIR): vol},
     # cpu=4.0,
     # memory=4096,
-    timeout=43200,
+    timeout=TIMEOUT_SECONDS,
 )
 def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
     """Heavy Nardini processing job that runs in parallel workers."""
@@ -285,7 +302,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         for seq in parsed_sequences:
             sequence_string = str(seq.seq)  # seq is a Bio.SeqRecord object
             if sequence_string in existing_sequences:
-                print(f"Found cached sequence {sequence_string}.")
+                logger.info(f"Found cached sequence {sequence_string}.")
                 progress_dict[sequence_string] = existing_sequence_map[sequence_string]
             else:
                 progress_dict[sequence_string] = None
@@ -315,7 +332,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
             worker_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Parallelize the sequence processing
-        with ProcessPoolExecutor(max_workers=16) as executor:
+        with ProcessPoolExecutor(max_workers=WORKER_COUNT) as executor:
             # Create partial function with fixed parameters (except the sequence)
             process_func = functools.partial(
                 process_single_sequence,
@@ -327,7 +344,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
             novel_sequences = [
                 seq for seq in parsed_sequences if str(seq.seq) not in existing_sequences
             ]
-            print(f"Processing {len(novel_sequences)} novel sequences.")
+            logger.info(f"Processing {len(novel_sequences)} novel sequences.")
 
             # Submit all sequences and keep a mapping to retrieve results
             future_to_seq = {executor.submit(process_func, seq): seq for seq in novel_sequences}
@@ -340,16 +357,16 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
                 try:
                     zip_path = future.result()
                     progress_dict[str(seq.seq)] = zip_path
-                    print(f"Processed sequence {str(seq.seq)} and added to progress dict.")
+                    logger.info(f"Processed sequence {str(seq.seq)} and added to progress dict.")
                 except Exception as e:
-                    print(f"Error processing sequence {str(seq.seq)}: {e}")
+                    logger.error(f"Error processing sequence {str(seq.seq)}: {e}")
                     progress_dict[str(seq.seq)] = None
 
                 # Persist progress after each sequence completes so clients get near-real-time updates.
                 persist_progress()
         calculation_end_time = time.time()
-        print(f"Nardini analysis took {calculation_end_time - calculation_start_time} seconds.")
-        print(f"Processed {len(novel_sequences)} sequences in parallel.")
+        logger.info(f"Nardini analysis took {calculation_end_time - calculation_start_time} seconds.")
+        logger.info(f"Processed {len(novel_sequences)} sequences in parallel.")
 
         # Collect all zip files corresponding to the requested sequences
         # Filter out special keys (_status, merged_zip_filename) and only get actual sequence zip paths
@@ -367,7 +384,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         
         merged_zip_path = final_output_dir / f"{run_id}.zip"
         zip_file = mergeZips(zip_files, merged_zip_path)
-        print(f"Found zip file: {zip_file}")
+        logger.info(f"Found zip file: {zip_file}")
 
         # Update mappings for newly processed sequences before finalizing
         seq_mappings_to_update = {}
@@ -387,7 +404,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
             mapping_file_path = seq_zip_maps_dir / mapping_filename
             with open(mapping_file_path, "w") as f:
                 json.dump(seq_mappings_to_update, f, indent=2)
-            print(f"Updated mappings for {len(seq_mappings_to_update)} sequences in {mapping_filename}")
+            logger.info(f"Updated mappings for {len(seq_mappings_to_update)} sequences in {mapping_filename}")
 
         # Mark the run as completed and store final merged zip location
         progress_dict["_status"] = "completed"
@@ -404,7 +421,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
             "total_time": end_time - start_time
         }
     except Exception as e:
-        print(f"Error in process_nardini_job: {e}")
+        logger.error(f"Error in process_nardini_job: {e}")
         # Update progress to show error status
         progress_dict = {
             "_status": "failed",
@@ -451,7 +468,7 @@ def fastapi_app():
             if not content:
                 raise HTTPException(status_code=400, detail="File is empty.")
             
-            MAX_FILE_SIZE = 10 * 1024 * 1024
+            # MAX_FILE_SIZE is defined globally above
             if len(content) > MAX_FILE_SIZE:
                 raise HTTPException(
                     status_code=413, 
@@ -511,7 +528,7 @@ def fastapi_app():
             }
             
         except Exception as e:
-            print(f"Error checking status for {run_id}: {e}")
+            logger.error(f"Error checking status for {run_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Error checking status: {str(e)}")
 
     @api.get("/download/{run_id}", summary="Download results")
@@ -543,7 +560,7 @@ def fastapi_app():
             )
             
         except Exception as e:
-            print(f"Error downloading zip for {run_id}: {e}")
+            logger.error(f"Error downloading zip for {run_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Error downloading file: {str(e)}")
 
     return api
