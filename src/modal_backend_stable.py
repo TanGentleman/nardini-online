@@ -40,7 +40,7 @@ logger = logging.getLogger("nardini_backend")
 
 # Configurable parameters with env-variable overrides
 VOLUME_DIR = Path(os.getenv("VOLUME_DIR", "/data"))
-VOLUME_NAME = os.getenv("VOLUME_NAME", "nardini_halophile_test_stable")
+VOLUME_NAME = os.getenv("VOLUME_NAME", "nardini_volume_stable")
 TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS", "43200"))  # default 12h
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 MAX_FILE_SIZE = MAX_UPLOAD_MB * 1024 * 1024  # bytes
@@ -234,11 +234,15 @@ def process_single_sequence(
             produced_zip = produced_zips[0]
 
             # Build a deterministic destination name to avoid collisions
-            # dest_zip_name = f"{seq_record.id}.zip"
-            dest_path = Path(output_dir) / produced_zip.name
+            # Use a hash of the sequence content to create a unique filename
+            import hashlib
+            sequence_hash = hashlib.md5(str(seq_record.seq).encode()).hexdigest()[:8]
+            dest_zip_name = f"nardini-{seq_record.id}-{sequence_hash}.zip"
+            dest_path = Path(output_dir) / dest_zip_name
 
             # Move the zip file to the shared output directory
             shutil.move(str(produced_zip), dest_path)
+            logger.info(f"Moved {produced_zip.name} to {dest_path.name} for sequence {seq_record.id}")
 
         finally:
             # Restore the original cwd no matter what
@@ -276,19 +280,26 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         if not parsed_sequences:
             raise ValueError("No valid sequences found in FASTA file")
         
+        # Log parsed sequences info
+        logger.info(f"Parsed {len(parsed_sequences)} sequences from FASTA file")
+        
         # Read existing analyzed sequences from the modal volume
         existing_sequence_map = {}
         seq_zip_maps_dir = VOLUME_DIR / "seq_zip_maps"
         if not seq_zip_maps_dir.exists():
             seq_zip_maps_dir.mkdir(parents=True, exist_ok=True)
-        for file in os.listdir(seq_zip_maps_dir):
-            if file.endswith(".json"):
-                with open(seq_zip_maps_dir / file, "r") as f:
-                    # get the keys
-                    file_dict = json.load(f)
-                    for key, value in file_dict.items():
-                        existing_sequence_map[key] = value["zip_filename"]
+        
+        cache_files = [f for f in os.listdir(seq_zip_maps_dir) if f.endswith(".json")]
+        logger.info(f"Found {len(cache_files)} cache files")
+        
+        for file in cache_files:
+            with open(seq_zip_maps_dir / file, "r") as f:
+                # get the keys
+                file_dict = json.load(f)
+                for key, value in file_dict.items():
+                    existing_sequence_map[key] = value["zip_filename"]
         existing_sequences = set(existing_sequence_map.keys())
+        logger.info(f"Total cached sequences loaded: {len(existing_sequences)}")
         
         # Create an in-progress file in the modal volume
         in_progress_filename = f"{run_id}_in_progress.json"
@@ -299,13 +310,21 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         }
 
         # Populate per-sequence status (None means still pending).
+        cached_count = 0
+        novel_count = 0
+        
         for seq in parsed_sequences:
             sequence_string = str(seq.seq)  # seq is a Bio.SeqRecord object
+            
             if sequence_string in existing_sequences:
-                logger.info(f"Found cached sequence {sequence_string}.")
                 progress_dict[sequence_string] = existing_sequence_map[sequence_string]
+                cached_count += 1
             else:
                 progress_dict[sequence_string] = None
+                novel_count += 1
+        
+        logger.info(f"Progress dict populated: {cached_count} cached, {novel_count} novel sequences")
+        logger.info(f"Total progress dict entries (excluding special keys): {len([k for k in progress_dict.keys() if not k.startswith('_')])}")
 
         # Helper that atomically writes the progress file and persists the volume.
         def persist_progress():
@@ -354,13 +373,14 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
 
             for future in as_completed(future_to_seq):
                 seq = future_to_seq[future]
+                sequence_string = str(seq.seq)
                 try:
                     zip_path = future.result()
-                    progress_dict[str(seq.seq)] = zip_path
-                    logger.info(f"Processed sequence {str(seq.seq)} and added to progress dict.")
+                    progress_dict[sequence_string] = zip_path
+                    logger.info(f"Processed sequence {seq.id} ({sequence_string[:50]}...) -> {zip_path}")
                 except Exception as e:
-                    logger.error(f"Error processing sequence {str(seq.seq)}: {e}")
-                    progress_dict[str(seq.seq)] = None
+                    logger.error(f"Error processing sequence {seq.id} ({sequence_string[:50]}...): {e}")
+                    progress_dict[sequence_string] = f"error: {e}"
 
                 # Persist progress after each sequence completes so clients get near-real-time updates.
                 persist_progress()
@@ -370,10 +390,26 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
 
         # Collect all zip files corresponding to the requested sequences
         # Filter out special keys (_status, merged_zip_filename) and only get actual sequence zip paths
-        zip_files = [
-            Path(p) for key, p in progress_dict.items() 
-            if not key.startswith("_") and key != "merged_zip_filename" and p and not str(p).startswith("error")
-        ]
+        
+        # Check each entry in progress_dict
+        valid_entries = []
+        invalid_entries = []
+        for key, p in progress_dict.items():
+            if key.startswith("_") or key == "merged_zip_filename":
+                continue
+            elif not p:
+                logger.warning(f"Empty value for sequence: {key[:50]}...")
+                invalid_entries.append((key, p))
+                continue
+            elif str(p).startswith("error"):
+                logger.error(f"Error entry for sequence: {key[:50]}... -> {p}")
+                invalid_entries.append((key, p))
+                continue
+            else:
+                valid_entries.append((key, p))
+        
+        logger.info(f"Collecting zip files: {len(valid_entries)} valid, {len(invalid_entries)} invalid entries")
+        zip_files = [Path(p) for key, p in valid_entries]
         
         if not zip_files:
             raise RuntimeError("Nardini completed but no .zip archive was found.")
@@ -384,6 +420,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         
         merged_zip_path = final_output_dir / f"{run_id}.zip"
         zip_file = mergeZips(zip_files, merged_zip_path)
+        logger.info(zip_files)
         logger.info(f"Found zip file: {zip_file}")
 
         # Update mappings for newly processed sequences before finalizing
@@ -436,7 +473,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
 
 @app.function(
     image=web_image,
-    volumes={str(VOLUME_DIR): vol},
+    volumes={str(VOLUME_DIR): vol.read_only()},
     # cpu=0.25,
     # memory=512,
 )
