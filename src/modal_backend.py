@@ -53,7 +53,7 @@ logger = logging.getLogger("nardini_backend")
 # Configurable parameters with env-variable overrides
 VOLUME_DIR = Path(os.getenv("VOLUME_DIR", "/data"))
 VOLUME_NAME = os.getenv("VOLUME_NAME", "nardini_halophile_test_dev")
-TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS", "43200"))  # default 12h
+TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS", "10800"))  # default 3h
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 MAX_FILE_SIZE = MAX_UPLOAD_MB * 1024 * 1024  # bytes
 WORKER_COUNT = int(os.getenv("WORKER_COUNT", "16"))
@@ -288,6 +288,9 @@ def ensure_volume_directories():
     image=nardini_image,
     volumes={str(VOLUME_DIR): vol},
     timeout=TIMEOUT_SECONDS,
+    retries=2,
+    scaledown_window=10,
+    # enable_memory_snapshot=True
 )
 def process_single_sequence(
     sequence_input: SequenceInput,
