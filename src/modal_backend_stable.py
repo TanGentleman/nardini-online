@@ -67,7 +67,7 @@ nardini_image = (
 )
 
 # Create a Modal application with shared volume
-app = modal.App("nardini-backend")
+app = modal.App("nardini_backend_stable")
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 # Web image imports (lightweight)
@@ -420,8 +420,8 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         
         merged_zip_path = final_output_dir / f"{run_id}.zip"
         zip_file = mergeZips(zip_files, merged_zip_path)
-        logger.info(zip_files)
-        logger.info(f"Found zip file: {zip_file}")
+        # logger.info(zip_files)
+        logger.info(f"Created merged zip file: {zip_file}")
 
         # Update mappings for newly processed sequences before finalizing
         seq_mappings_to_update = {}
