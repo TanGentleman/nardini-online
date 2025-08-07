@@ -29,6 +29,18 @@ import modal
 import zipfile 
 from uuid import uuid4
 import logging
+from typing import Any
+import shutil
+from typing_extensions import TypedDict
+
+class SequenceInput(TypedDict):
+    sequence: Any # Bio.SeqRecord object
+    seq_uuid: str
+
+class ProgressData(TypedDict):
+    run_id: str
+    status: str
+    pending_sequences: list[str]
 
 # ---------------------- Environment configuration ---------------------- #
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -40,7 +52,7 @@ logger = logging.getLogger("nardini_backend")
 
 # Configurable parameters with env-variable overrides
 VOLUME_DIR = Path(os.getenv("VOLUME_DIR", "/data"))
-VOLUME_NAME = os.getenv("VOLUME_NAME", "nardini_volume")
+VOLUME_NAME = os.getenv("VOLUME_NAME", "nardini_halophile_test_dev")
 TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS", "43200"))  # default 12h
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 MAX_FILE_SIZE = MAX_UPLOAD_MB * 1024 * 1024  # bytes
@@ -53,6 +65,7 @@ web_image = (
     .pip_install(
         "fastapi[standard]==0.115.13",
         "python-multipart==0.0.20",
+        "biopython==1.84",
     )
 )
 
@@ -67,27 +80,99 @@ nardini_image = (
 )
 
 # Create a Modal application with shared volume
-app = modal.App("nardini-backend")
+app = modal.App("nardini_halophile_test")
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 # Web image imports (lightweight)
 with web_image.imports():
     from fastapi import FastAPI, HTTPException, File, UploadFile
     from fastapi.responses import Response
+    from Bio import SeqIO
+    from io import StringIO
+
+    # The following functions are copied from nardini.utils.py
+    # NOTE: See https://github.com/mshinn23/nardini/blob/main/nardini/utils.py
+    def read_sequences_from_filename(sequence_filename, default_name, verbose=False):
+        """This is a helper function to read in sequences from a sequence FASTA file.
+        This is a companion function to `read_sequences_from_string_list`.
+
+        @param sequence_filename (str): The filepath of the file containing sequences.
+                                        This file can contain FASTA records, or
+                                        sequences that are saved on each newline.
+
+        @param default_name (str):      This is the prefix name that's used when the
+                                        file is found to only contain raw sequences
+                                        on each new line.
+
+        @param verbose (bool):          The extent to which information should be
+                                        displayed throughout the analysis. Default:
+                                        False.
+
+        @returns seqio_sequences:       A list of sequence strings that were
+                                        extracted from the sequence file.
+        """
+        seqio_sequences = list()
+        if sequence_filename is None:
+            raise RuntimeError('This parameter cannot be `None`. Exiting.')
+
+        if type(sequence_filename) is not str:
+            raise RuntimeError('This parameter can only be a string. Exiting.')
+
+        if os.path.exists(sequence_filename):
+            with open(sequence_filename, 'r') as seqfile:
+                content = seqfile.read()
+                if content.count('>') > 0:
+                    seqio_sequences = list(SeqIO.parse(sequence_filename, 'fasta'))
+                else:
+                    # This means that there is a list of sequences that are separated
+                    # by newlines. We split by any whitespace so as to capture
+                    # carriage returns and line feeds.
+                    raw_sequences = [s.strip() for s in content.split() if len(s.strip()) > 0]
+                    seqio_sequences = read_sequences_from_string_list(raw_sequences, default_name)
+        else:
+            raise RuntimeError(f'Sequence filename: "{sequence_filename}" not found.')
+        return seqio_sequences
+
+
+    def read_sequences_from_string_list(list_of_sequences, default_name, verbose=False):
+        """This is a helper function to read in sequences from a list of raw sequences.
+        This is a companion function to `read_sequences_from_filename`.
+
+        @param sequence_filename (str): The filepath of the file containing sequences.
+                                        This file can contain FASTA records, or
+                                        sequences that are saved on each newline.
+
+        @param default_name (str):      This is the prefix name that's used when the
+                                        file is found to only contain raw sequences
+                                        on each new line.
+
+        @param verbose (bool):          The extent to which information should be
+                                        displayed throughout the analysis. Default:
+                                        False.
+
+        @returns seqio_sequences:       A list of sequence strings that were
+                                        extracted from the sequence file.
+        """
+        sequences = list()
+        # This means that we have to create a fake record using the sequence content.
+        for index, sequence in enumerate(list_of_sequences, start=1):
+            fasta = f'>{default_name}-{index}\n{sequence}'
+            fake_record = SeqIO.read(StringIO(fasta), 'fasta')
+            sequences.append(fake_record)
+
+        if verbose:
+            print('Number of sequences read: {num}'.format(num=len(sequences)), end='\n\n')
+        return sequences
 
 # Nardini image imports (heavy)
 with nardini_image.imports():
-    from concurrent.futures import ProcessPoolExecutor
-    import functools
-
     from nardini.constants import (
         NUM_SCRAMBLED_SEQUENCES,
         DEFAULT_RANDOM_SEED,
         TYPEALL,
-        DEFAULT_PREFIX_NAME,
     )
     from nardini.score_and_plot import calculate_zscore_and_plot
-    from nardini.utils import set_random_seed, read_sequences_from_filename
+    from nardini.utils import set_random_seed
 
 ### NOTE Functions for stitching .zip results from each invocation together into final .zip
 #helper fxn for mergeZips
@@ -187,24 +272,38 @@ def mergeZips(zipList, destination_filepath):
   
   if not Path(destination_filepath).exists():
     raise ValueError("Zip creation failed!")
+  logger.info(f"Merged zip file created at {destination_filepath}")
   return destination_filepath
 
-###  
+def ensure_volume_directories():
+  """Ensure the volume directories exist."""
+  for dir in ["zipfiles/by_fasta", "zipfiles/by_idr", "runs"]:
+    if not (VOLUME_DIR / dir).exists():
+      logger.warning(f"Volume directory {dir} does not exist, creating it")
+      (VOLUME_DIR / dir).mkdir(parents=True, exist_ok=True)
+
+
+###
+@app.function(
+    image=nardini_image,
+    volumes={str(VOLUME_DIR): vol},
+    timeout=TIMEOUT_SECONDS,
+)
 def process_single_sequence(
-    seq_record,
-    amino_acid_groupings,
-    num_scrambled_sequences,
-    random_seed,
-    output_dir,
-):
+    sequence_input: SequenceInput,
+) -> None:
     """Process a single sequence with Nardini analysis and return the created zip path.
 
     Each call is executed in its own temporary directory so that concurrently running
-    processes cannot clash while writing output files.  The produced zip archive is
-    moved to *output_dir* and the final absolute path is returned to the caller.
+    processes cannot clash while writing output files. The produced zip archive is
+    moved to the modal volume in zipfiles/by_idr/{seq_uuid}.zip.
     """
-
-    import shutil  # Local import to ensure availability inside worker process
+    sequence = sequence_input["sequence"]
+    seq_uuid = sequence_input["seq_uuid"]
+    amino_acid_groupings = TYPEALL
+    num_scrambled_sequences = NUM_SCRAMBLED_SEQUENCES
+    random_seed = set_random_seed(DEFAULT_RANDOM_SEED)
+    output_dir = VOLUME_DIR / "zipfiles" / "by_idr"
 
     # Create an isolated working directory for this worker process
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -218,227 +317,49 @@ def process_single_sequence(
         try:
             # Run the calculation
             calculate_zscore_and_plot(
-                [seq_record],  # Preserve original API (expects list)
+                [sequence],  # Preserve original API (expects list)
                 amino_acid_groupings,
                 num_scrambled_sequences,
                 random_seed,
             )
 
             # Locate the zip produced by Nardini (there should be exactly one)
-            produced_zips = list(tmp_path.glob("nardini-data-*.zip"))
-            if len(produced_zips) != 1:
+            zip_files = [f for f in os.listdir(tmp_path) if f.startswith("nardini-data-") and f.endswith(".zip")]
+            if len(zip_files) != 1:
                 raise RuntimeError(
-                    f"Expected one zip for sequence {seq_record.id}, found {len(produced_zips)}"
+                    f"Expected one zip for sequence {sequence.id}, found {len(zip_files)}"
                 )
 
-            produced_zip = produced_zips[0]
+            produced_zip_path = tmp_path / zip_files[0]
 
             # Build a deterministic destination name to avoid collisions
             # dest_zip_name = f"{seq_record.id}.zip"
-            dest_path = Path(output_dir) / produced_zip.name
+            dest_path = Path(output_dir) / f"{seq_uuid}.zip"
 
             # Move the zip file to the shared output directory
-            shutil.move(str(produced_zip), dest_path)
+            shutil.move(str(produced_zip_path), str(dest_path))
+        
+        except Exception as e:
+            logger.error(f"Error processing sequence {sequence.id}: {e}")
+            return None
 
         finally:
             # Restore the original cwd no matter what
             os.chdir(old_cwd)
 
+    output_to_zip = dest_path
+    if not output_to_zip.exists():
+        raise RuntimeError(f"Output zip file {output_to_zip} does not exist")
     # Return the absolute path so the parent can build the mapping
-    return str(dest_path)
-
-#24 hour timeout
-@app.function(
-    image=nardini_image,
-    volumes={str(VOLUME_DIR): vol},
-    # cpu=4.0,
-    # memory=4096,
-    timeout=TIMEOUT_SECONDS,
-)
-def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
-    """Heavy Nardini processing job that runs in parallel workers."""
-    start_time = time.time()
-
-    try:
-        # Parse FASTA content (now we have access to nardini.utils in this image)
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta") as temp_file:
-            temp_file.write(sequences_data["file_content"])
-            temp_file_path = temp_file.name
-        
-        try:
-            parsed_sequences = read_sequences_from_filename(
-                temp_file_path, DEFAULT_PREFIX_NAME, verbose=False
-            )
-        finally:
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
-        
-        if not parsed_sequences:
-            raise ValueError("No valid sequences found in FASTA file")
-        
-        # Read existing analyzed sequences from the modal volume
-        existing_sequence_map = {}
-        seq_zip_maps_dir = VOLUME_DIR / "seq_zip_maps"
-        if not seq_zip_maps_dir.exists():
-            seq_zip_maps_dir.mkdir(parents=True, exist_ok=True)
-        for file in os.listdir(seq_zip_maps_dir):
-            if file.endswith(".json"):
-                with open(seq_zip_maps_dir / file, "r") as f:
-                    # get the keys
-                    file_dict = json.load(f)
-                    for key, value in file_dict.items():
-                        existing_sequence_map[key] = value["zip_filename"]
-        existing_sequences = set(existing_sequence_map.keys())
-        
-        # Create an in-progress file in the modal volume
-        in_progress_filename = f"{run_id}_in_progress.json"
-        # Track progress for each requested sequence plus global run status.
-        progress_dict = {
-            "_status": "in_progress",  # overall run status
-            "merged_zip_filename": None,  # will be filled in once complete
-        }
-
-        # Populate per-sequence status (None means still pending).
-        for seq in parsed_sequences:
-            sequence_string = str(seq.seq)  # seq is a Bio.SeqRecord object
-            if sequence_string in existing_sequences:
-                logger.info(f"Found cached sequence {sequence_string}.")
-                progress_dict[sequence_string] = existing_sequence_map[sequence_string]
-            else:
-                progress_dict[sequence_string] = None
-
-        # Helper that atomically writes the progress file and persists the volume.
-        def persist_progress():
-            with open(VOLUME_DIR / in_progress_filename, "w") as fp:
-                json.dump(progress_dict, fp)
-            # Flush changes to the Modal volume so other processes/requests can see them.
-            vol.commit()
-
-        # Write the initial state so the client can poll immediately.
-        persist_progress()
-
-        # Nardini parameters.
-        # NOTE: Should seed be randomized for each sequence calculation?
-        random_seed = set_random_seed(DEFAULT_RANDOM_SEED)
-        amino_acid_groupings = TYPEALL
-        num_scrambled_sequences = NUM_SCRAMBLED_SEQUENCES
-
-        # Run the analysis in parallel.
-        calculation_start_time = time.time()
-        
-        # Directory where workers should place their individual zip files
-        worker_output_dir = VOLUME_DIR / "zipfiles" / "by_idr"
-        if not worker_output_dir.exists():
-            worker_output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Parallelize the sequence processing
-        with ProcessPoolExecutor(max_workers=WORKER_COUNT) as executor:
-            # Create partial function with fixed parameters (except the sequence)
-            process_func = functools.partial(
-                process_single_sequence,
-                amino_acid_groupings=amino_acid_groupings,
-                num_scrambled_sequences=num_scrambled_sequences,
-                random_seed=random_seed,
-                output_dir=str(worker_output_dir),
-            )
-            novel_sequences = [
-                seq for seq in parsed_sequences if str(seq.seq) not in existing_sequences
-            ]
-            logger.info(f"Processing {len(novel_sequences)} novel sequences.")
-
-            # Submit all sequences and keep a mapping to retrieve results
-            future_to_seq = {executor.submit(process_func, seq): seq for seq in novel_sequences}
-
-            # Collect results as they complete
-            from concurrent.futures import as_completed
-
-            for future in as_completed(future_to_seq):
-                seq = future_to_seq[future]
-                try:
-                    zip_path = future.result()
-                    progress_dict[str(seq.seq)] = zip_path
-                    logger.info(f"Processed sequence {str(seq.seq)} and added to progress dict.")
-                except Exception as e:
-                    logger.error(f"Error processing sequence {str(seq.seq)}: {e}")
-                    progress_dict[str(seq.seq)] = None
-
-                # Persist progress after each sequence completes so clients get near-real-time updates.
-                persist_progress()
-        calculation_end_time = time.time()
-        logger.info(f"Nardini analysis took {calculation_end_time - calculation_start_time} seconds.")
-        logger.info(f"Processed {len(novel_sequences)} sequences in parallel.")
-
-        # Collect all zip files corresponding to the requested sequences
-        # Filter out special keys (_status, merged_zip_filename) and only get actual sequence zip paths
-        zip_files = [
-            Path(p) for key, p in progress_dict.items() 
-            if not key.startswith("_") and key != "merged_zip_filename" and p and not str(p).startswith("error")
-        ]
-        
-        if not zip_files:
-            raise RuntimeError("Nardini completed but no .zip archive was found.")
-
-        final_output_dir = VOLUME_DIR / "zipfiles" / "by_fasta"
-        if not final_output_dir.exists():
-            final_output_dir.mkdir(parents=True, exist_ok=True)
-        
-        merged_zip_path = final_output_dir / f"{run_id}.zip"
-        zip_file = mergeZips(zip_files, merged_zip_path)
-        logger.info(f"Found zip file: {zip_file}")
-
-        # Update mappings for newly processed sequences before finalizing
-        seq_mappings_to_update = {}
-        for seq in parsed_sequences:
-            sequence_string = str(seq.seq)
-            if sequence_string not in existing_sequences and progress_dict.get(sequence_string):
-                # This is a newly processed sequence with a valid zip path
-                seq_mappings_to_update[sequence_string] = {
-                    "zip_filename": progress_dict[sequence_string],
-                    "processed_at": time.time(),
-                    "run_id": run_id
-                }
-        
-        # Write the updated mappings to the seq_zip_maps directory
-        if seq_mappings_to_update:
-            mapping_filename = f"{run_id}_mappings.json"
-            mapping_file_path = seq_zip_maps_dir / mapping_filename
-            with open(mapping_file_path, "w") as f:
-                json.dump(seq_mappings_to_update, f, indent=2)
-            logger.info(f"Updated mappings for {len(seq_mappings_to_update)} sequences in {mapping_filename}")
-
-        # Mark the run as completed and store final merged zip location
-        progress_dict["_status"] = "completed"
-        progress_dict["merged_zip_filename"] = str(zip_file)
-
-        # Persist the final state (this includes a commit).
-        persist_progress()
-
-        end_time = time.time()
-        return {
-            "status": "completed",
-            "zip_filename": zip_file, 
-            "calculation_time": calculation_end_time - calculation_start_time, 
-            "total_time": end_time - start_time
-        }
-    except Exception as e:
-        logger.error(f"Error in process_nardini_job: {e}")
-        # Update progress to show error status
-        progress_dict = {
-            "_status": "failed",
-            "error": str(e),
-            "merged_zip_filename": None,
-        }
-        with open(VOLUME_DIR / f"{run_id}_in_progress.json", "w") as fp:
-            json.dump(progress_dict, fp)
-        vol.commit()
-        raise
+    logging.info(f"Sequence {sequence.id} processed and added to volume at: {output_to_zip}")
+    return None
 
 
 @app.function(
     image=web_image,
     volumes={str(VOLUME_DIR): vol},
-    # cpu=0.25,
-    # memory=512,
+    # cpu=0.125,
+    # memory=100,
 )
 @modal.asgi_app()
 def fastapi_app():
@@ -462,6 +383,8 @@ def fastapi_app():
                 detail="Invalid file type. Please upload a FASTA file (.fasta, .fa, .fas).",
             )
         
+        ensure_volume_directories()
+        
         try:
             # Read and validate file content
             content = await file.read()
@@ -475,57 +398,206 @@ def fastapi_app():
                     detail=f"File is too large. Limit is {MAX_FILE_SIZE/(1024*1024)}MB."
                 )
 
-            # Pass raw content to worker for parsing (since nardini.utils is only in nardini_image)
-            sequences_data = {
-                "file_content": content.decode('utf-8'),  # Pass raw FASTA content
-                "filename": file.filename
-            }
+            # Parse sequences using the reference code with temporary file
+            file_content = content.decode('utf-8')
             
+            # Create temporary file to use with read_sequences_from_filename
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta") as temp_file:
+                temp_file.write(file_content)
+                temp_file_path = temp_file.name
+            
+            try:
+                parsed_sequences = read_sequences_from_filename(
+                    temp_file_path,
+                    "sequence",  # default_name prefix  
+                    verbose=False
+                )
+                
+                if not parsed_sequences:
+                    raise HTTPException(status_code=400, detail="No valid sequences found in FASTA file")
+                    
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to parse FASTA file: {e}")
         
-        finally:
-            pass  # No temp file cleanup needed since we pass content directly
+        # Create set of current sequence strings
+        current_sequence_strings = {str(seq.seq) for seq in parsed_sequences}
+        logger.info(f"Processing {len(current_sequence_strings)} unique sequences")
         
-        # Generate run ID and spawn processing job
+        # Build sequence mapping and consolidate entries from existing .jsonl files
+        runs_dir = VOLUME_DIR / "runs"
+        
+        # Consolidated entries for the new .jsonl file
+        consolidated_entries = {}
+        
+        # Scan all existing .jsonl files for sequences in our current set
+        for file in os.listdir(runs_dir):
+            if file.endswith(".jsonl"):
+                jsonl_path = runs_dir / file
+                try:
+                    with open(jsonl_path, "r") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:  # Skip empty lines
+                                entry = json.loads(line)
+                                sequence_string = entry.get("sequence_string")
+                                
+                                # Only include sequences that are in our current upload
+                                if sequence_string in current_sequence_strings:
+                                    if sequence_string in consolidated_entries:
+                                        if entry.get("status") == "cached":
+                                            # Update newer entry for cached sequence
+                                            consolidated_entries[sequence_string] = entry
+                                    else:
+                                        consolidated_entries[sequence_string] = entry
+
+                except (json.JSONDecodeError, FileNotFoundError) as e:
+                    logger.warning(f"Failed to read {jsonl_path}: {e}")
+        
+        # Generate run_id and prepare sequence inputs
         run_id = str(uuid4())
+        sequence_inputs = []
+        cached_sequences = 0
+        novel_sequences = 0
         
-        # Spawn the heavy processing job
-        job_call = process_nardini_job.spawn(sequences_data, run_id)
+        # Process sequences and create entries for any missing ones
+        for seq in parsed_sequences:
+            sequence_string = str(seq.seq)
+            
+            if sequence_string in consolidated_entries:
+                entry = consolidated_entries[sequence_string]
+                
+                if entry["status"] == "cached":
+                    cached_sequences += 1
+                    logger.info(f"Found cached sequence: {seq.id}")
+                else:
+                    # Reuse existing UUID for pending sequence
+                    # Consider it cached for now
+                    seq_uuid = entry["seq_uuid"]
+                    cached_sequences += 1
+                    logger.info(f"Reusing existing UUID for pending sequence {seq.id}: {seq_uuid}")
+            else:
+                # Truly novel sequence, generate new UUID and entry
+                seq_uuid = str(uuid4())
+                novel_sequences += 1
+                consolidated_entries[sequence_string] = {
+                    "sequence_string": sequence_string,
+                    "seq_uuid": seq_uuid,
+                    "sequence_id": seq.id,
+                    "status": "pending",
+                    "zip_path": None
+                }
+                
+                sequence_inputs.append(SequenceInput(
+                    sequence=seq,
+                    seq_uuid=seq_uuid
+                ))
+                logger.info(f"Novel sequence {seq.id} assigned new UUID: {seq_uuid}")
         
+        # Create {run_id}.jsonl file with consolidated entries
+        jsonl_path = runs_dir / f"{run_id}.jsonl"
+        with open(jsonl_path, "w") as f:
+           for entry in consolidated_entries.values():
+               f.write(json.dumps(entry) + "\n")
+            # for seq in parsed_sequences:
+            #     sequence_string = str(seq.seq)
+            #     entry = consolidated_entries[sequence_string]
+            #     f.write(json.dumps(entry) + "\n")
+        
+        # Create clean .json metadata file (no full sequence data)
+        run_metadata = {
+            "status": "in_progress",
+            "total_sequences": len(parsed_sequences),
+            "cached_sequences": cached_sequences,
+            "novel_sequences": novel_sequences,
+            "merged_zip_filename": None,
+            "started_at": time.time(),
+            "completed_at": None
+        }
+        
+        json_path = runs_dir / f"{run_id}.json"
+        with open(json_path, "w") as f:
+            json.dump(run_metadata, f, indent=2)
+        
+        # Spawn processing jobs for novel sequences using spawn_map
+        if sequence_inputs:
+            logger.info(f"Spawning {len(sequence_inputs)} processing jobs")
+            await process_single_sequence.spawn_map.aio(sequence_inputs)
+        else:
+            logger.info("No novel sequences to process - all sequences are cached")
+        
+        logger.info(f"Created run {run_id} with {run_metadata['novel_sequences']} novel and {run_metadata['cached_sequences']} cached sequences")
+        
+        vol.commit()
         return {
             "run_id": run_id,
-            "job_id": job_call.object_id,
-            "status": "submitted",
-            "message": "Job submitted for processing"
+            "status": "submitted", 
+            "message": "Job submitted for processing",
+            "total_sequences": run_metadata["total_sequences"],
+            "novel_sequences": run_metadata["novel_sequences"],
+            "cached_sequences": run_metadata["cached_sequences"]
         }
 
     @api.get("/status/{run_id}", summary="Check job status")
-    async def check_status(run_id: str) -> dict:
+    async def check_status(run_id: str) -> ProgressData:
         """Check the status of a processing job."""
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
         
         try:
-            # Read progress file from volume
-            progress_file_path = f"{run_id}_in_progress.json"
-            file_contents = vol.read_file(progress_file_path)
+            # Read progress from volume
+            # First read the json file
+            runs_dir = VOLUME_DIR / "runs"
+            json_path = runs_dir / f"{run_id}.json"
+            with open(json_path, "r") as f:
+                progress_data = json.load(f)
             
-            if not file_contents:
-                raise HTTPException(status_code=404, detail="Data for this run not found")
+            pending_entries = []
+            pending_sequences = []
+            if progress_data.get("status") == "completed":
+                return ProgressData(
+                    run_id=run_id,
+                    status="completed",
+                    pending_sequences=[],
+                )
+            else:
+                # Read the jsonl file
+                jsonl_path = runs_dir / f"{run_id}.jsonl"
+                with open(jsonl_path, "r") as f:
+                    for line in f: 
+                        entry = json.loads(line)
+                        if entry.get("status") == "pending":
+                            pending_entries.append(entry)
             
-            # Read the file contents
-            file_contents_bytes = b""
-            for chunk in file_contents:
-                file_contents_bytes += chunk
+            if pending_entries:
+                # Check if all of the pending sequences are in the by_idr directory
+                idr_dir = VOLUME_DIR / "zipfiles" / "by_idr"
+                idr_filenames = os.listdir(str(idr_dir))
+                for entry in pending_entries:
+                    if f"{entry.get('seq_uuid')}.zip" not in idr_filenames:
+                        pending_sequences.append(entry.get("sequence_string"))
             
-            progress_data = json.loads(file_contents_bytes)
-            
-            return {
-                "run_id": run_id,
-                "status": progress_data.get("_status", "unknown"),
-                "progress": progress_data
-            }
+            if pending_sequences:
+                return ProgressData(
+                    run_id=run_id,
+                    status="in_progress",
+                    pending_sequences=pending_sequences
+                )
+            else:
+                # Update the .json file to the completed status
+                progress_data["status"] = "completed"
+                progress_data["completed_at"] = time.time()
+                with open(json_path, "w") as f:
+                    json.dump(progress_data, f, indent=2)
+                vol.commit()
+                return ProgressData(
+                    run_id=run_id,
+                    status="completed",
+                    pending_sequences=[]
+                )
             
         except Exception as e:
             logger.error(f"Error checking status for {run_id}: {e}")
@@ -539,13 +611,46 @@ def fastapi_app():
         
         try:
             # Construct the path to the zip file in the volume
-            volume_zip_path = f"zipfiles/by_fasta/{run_id}.zip"
-            
+            merged_zip_paths = VOLUME_DIR / "zipfiles" / "by_fasta"
             # Read the zip file from the volume
-            file_contents = vol.read_file(volume_zip_path)
-            
-            if not file_contents:
-                raise HTTPException(status_code=404, detail="Zip file not found. Job may still be in progress.")
+            filenames = os.listdir(str(merged_zip_paths))
+            for filename in filenames:
+                if filename == f"{run_id}.zip":
+                    file_contents = vol.read_file(f"zipfiles/by_fasta/{filename}")
+                    break
+            else:
+                # Get all the seq_uuids or zip_paths from the runs directory
+                runs_dir = VOLUME_DIR / "runs"
+                pending_seq_uuids = []
+                completed_zip_paths = []
+                for file in os.listdir(runs_dir):
+                    if file == f"{run_id}.jsonl":
+                        jsonl_path = runs_dir / file
+                        with open(jsonl_path, "r") as f:
+                            for line in f:
+                                entry = json.loads(line)
+                                if entry.get("zip_path"):
+                                    completed_zip_paths.append(entry.get("zip_path"))
+                                else:
+                                    pending_seq_uuids.append(entry.get("seq_uuid"))
+                if pending_seq_uuids:
+                    # Check if all of the pending seq_uuids are in the by_idr directory
+                    idr_dir = VOLUME_DIR / "zipfiles" / "by_idr"
+                    idr_filenames = os.listdir(str(idr_dir))
+                    for seq_uuid in pending_seq_uuids:
+                        if f"{seq_uuid}.zip" not in idr_filenames:
+                            logger.warning(f"Zip file for seq_uuid {seq_uuid} not found. Download request will fail.")
+                            raise HTTPException(status_code=404, detail="Zip file not found. Job may still be in progress.")
+                        else:
+                            completed_zip_paths.append(str(idr_dir / f"{seq_uuid}.zip"))
+                
+                # Merge the zip files
+                merged_zip_path = VOLUME_DIR / "zipfiles" / "by_fasta" / f"{run_id}.zip"
+                zip_file = mergeZips(completed_zip_paths, str(merged_zip_path))
+                assert zip_file == str(merged_zip_path)
+                assert zip_file.endswith(f"{run_id}.zip")
+                vol.commit()
+                file_contents = vol.read_file(f"zipfiles/by_fasta/{run_id}.zip")
             
             # Collect all chunks into bytes
             zip_data = b""
