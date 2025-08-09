@@ -21,9 +21,11 @@ curl -X POST "YOUR_MODAL_APP_URL/upload_fasta" \
 
 Volume layout and files written:
 --------------------------------
-- runs/{run_id}.json         -> metadata: status, counts, timestamps
-- runs/{run_id}.jsonl        -> entries: one per sequence with fields: 
-                                sequence_string, seq_uuid, sequence_id, status, zip_path
+- runs/{run_id}.json -> metadata for the run including:
+    - status, counts, timestamps (submitted_at, completed_at)
+    - sequences: mapping of sequence_string -> {
+        sequence_id, status, start_time, end_time, seq_uuid, zip_path, job_id
+      }
 - zipfiles/by_idr/{seq_uuid}.zip  -> per-sequence Nardini output
 - zipfiles/by_fasta/{run_id}.zip  -> merged archive of all per-sequence zips
 
@@ -44,9 +46,11 @@ import modal
 import zipfile 
 from uuid import uuid4
 import logging
-from typing import Any, Optional, List, Dict
+from typing import Any, List, Dict, Optional
 import shutil
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, Literal
+
+SequenceString = str
 
 class SequenceInput(TypedDict):
     sequence: Any # Bio.SeqRecord object
@@ -55,14 +59,28 @@ class SequenceInput(TypedDict):
 class ProgressData(TypedDict):
     run_id: str
     status: str
-    pending_sequences: list[str]
+    pending_sequences: List[str]
 
-class SequenceEntry(TypedDict):
-    sequence_string: str
-    seq_uuid: str
+class SequenceData(TypedDict):
     sequence_id: str
-    status: str  # "pending" | "cached"
+    status: Literal["pending", "cached", "pending_external", "complete"]
+    start_time: Optional[float]
+    end_time: Optional[float]
+    seq_uuid: Optional[str]
     zip_path: Optional[str]
+    job_id: Optional[str]
+
+class SequencesDict(TypedDict):
+    sequences: Dict[SequenceString, SequenceData]
+
+class RunData(TypedDict):
+    status: Literal["in_progress", "complete"]
+    sequences: SequencesDict
+    total_sequences: int
+    cached_sequences: int
+    merged_zip_filename: Optional[str]
+    submitted_at: float
+    completed_at: Optional[float]
 
 # ---------------------- Environment configuration ---------------------- #
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -70,7 +88,7 @@ logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("nardini_backend")
+logger = logging.getLogger("nardini_backend_dev")
 
 # Configurable parameters with env-variable overrides
 VOLUME_DIR = Path(os.getenv("VOLUME_DIR", "/data"))
@@ -105,118 +123,154 @@ app = modal.App("nardini_backend_dev")
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 # ---------------------- Helper utilities (paths, IO, scans) ---------------------- #
-def runs_dir() -> Path:
+def get_runs_dir() -> Path:
     return VOLUME_DIR / "runs"
 
 
-def zip_by_idr_dir() -> Path:
+def get_zip_by_idr_dir() -> Path:
     return VOLUME_DIR / "zipfiles" / "by_idr"
 
 
-def zip_by_fasta_dir() -> Path:
+def get_zip_by_fasta_dir() -> Path:
     return VOLUME_DIR / "zipfiles" / "by_fasta"
 
 
-def run_json_path(run_id: str) -> Path:
-    return runs_dir() / f"{run_id}.json"
+def get_run_json_path(run_id: str) -> Path:
+    return get_runs_dir() / f"{run_id}.json"
 
 
-def run_jsonl_path(run_id: str) -> Path:
-    return runs_dir() / f"{run_id}.jsonl"
-
-
-def read_json(path: Path) -> Dict[str, Any]:
+def read_json(path: Path) -> dict:
     with open(path, "r") as f:
         return json.load(f)
 
 
-def write_json(path: Path, data: Dict[str, Any]) -> None:
+def write_json(path: Path, data: dict) -> None:
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
-
-def read_jsonl_entries(path: Path) -> List[Dict[str, Any]]:
-    entries: List[Dict[str, Any]] = []
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                entries.append(json.loads(line))
-    return entries
+def get_run_metadata(run_id: str) -> RunData:
+    path = get_run_json_path(run_id)
+    return read_json(path)
 
 
-def write_jsonl_entries(path: Path, entries: List[Dict[str, Any]]) -> None:
-    with open(path, "w") as f:
-        for entry in entries:
-            f.write(json.dumps(entry) + "\n")
+def write_run_metadata_to_volume(run_id: str, data: RunData) -> None:
+    path = get_run_json_path(run_id)
+    write_json(path, data)
 
-
-def idr_zip_filenames() -> set[str]:
-    """Return the set of zip filenames present in `zipfiles/by_idr`.
-
-    Uses pathlib for clarity and to avoid OS-specific listdir nuances.
-    """
-    return {path.name for path in zip_by_idr_dir().iterdir() if path.is_file()}
-
-
-def missing_pending_sequences(pending_entries: List[SequenceEntry]) -> List[str]:
-    existing = idr_zip_filenames()
-    missing: List[str] = []
-    for entry in pending_entries:
-        if f"{entry['seq_uuid']}.zip" not in existing:
-            missing.append(entry["sequence_string"])
-    return missing
-
-
-def zip_paths_for_run(run_id: str) -> List[str]:
-    completed_zip_paths: List[str] = []
-    try:
-        entries = read_jsonl_entries(run_jsonl_path(run_id))
-    except FileNotFoundError:
-        entries = []
-    pending_seq_uuids: List[str] = []
-    for e in entries:
-        if e.get("zip_path"):
-            completed_zip_paths.append(e["zip_path"])  # type: ignore[arg-type]
-        else:
-            pending_seq_uuids.append(e["seq_uuid"])  # type: ignore[index]
-    existing = idr_zip_filenames()
-    for seq_uuid in pending_seq_uuids:
-        expected = f"{seq_uuid}.zip"
-        if expected not in existing:
-            raise FileNotFoundError(f"Zip for {seq_uuid} not found")
-        completed_zip_paths.append(str(zip_by_idr_dir() / expected))
-    return completed_zip_paths
-
-
-def consolidate_entries_for_sequences(current_sequence_strings: set[str]) -> Dict[str, SequenceEntry]:
-    """Scan existing run JSONL files and return latest entries for the provided sequences.
-
-    Prefers entries with status "cached" when duplicates exist across multiple runs.
-    """
-    consolidated: Dict[str, SequenceEntry] = {}
-    for path in runs_dir().iterdir():
-        if path.suffix == ".jsonl" and path.is_file():
+def create_sequences_data(sequence_strings: set[str]) -> SequencesDict:
+    """Scan existing run JSON files and return sequence data for the provided sequences."""
+    sequences_data: SequencesDict = {}
+    for path in get_runs_dir().iterdir():
+        if path.suffix == ".json" and path.is_file():
             try:
-                for entry in read_jsonl_entries(path):
-                    seq_str = entry.get("sequence_string")
-                    if seq_str in current_sequence_strings:
-                        if seq_str in consolidated:
-                            if entry.get("status") == "cached":
-                                consolidated[seq_str] = entry  # type: ignore[assignment]
-                        else:
-                            consolidated[seq_str] = entry  # type: ignore[assignment]
+                data = get_run_metadata(path.stem)
+                sequences = data["sequences"]
+                if not sequences:
+                    continue
+                for seq_str, seq_data in sequences.items():
+                    if seq_str not in sequence_strings:
+                        continue
+                    sequence_strings.remove(seq_str)
+
+                    seq_status = seq_data["status"]
+                    if seq_status == "pending" or seq_status == "pending_external":
+                        seq_data["status"] = "pending_external"
+                    elif seq_status == "cached" or seq_status == "complete":
+                        seq_data["status"] = "cached"
+                    else:
+                        raise ValueError(f"Invalid sequence status: {seq_status}")
+                    
+                    if seq_str in sequences_data:
+                        # Prefer cached over pending
+                        if sequences_data[seq_str]["status"] != "cached":
+                            sequences_data[seq_str] = seq_data
+                    else:
+                        sequences_data[seq_str] = seq_data
             except (json.JSONDecodeError, FileNotFoundError) as e:
                 logger.warning(f"Failed to read {path}: {e}")
-    return consolidated
+            except Exception as e:
+                logger.warning(f"Unexpected error reading {path}: {e}")
+    
+    for seq_str in sequence_strings:
+        sequences_data[seq_str] = SequenceData(
+            sequence_id="TEMP_ID",
+            status="pending",
+            start_time=None,
+            end_time=None,
+            seq_uuid=str(uuid4()),
+            zip_path=None,
+            job_id=None
+        )
+    return sequences_data
 
 
-def seqrecord_from_entry(entry: SequenceEntry):
-    # Local import to avoid cross-image import issues
-    from Bio.SeqRecord import SeqRecord  # type: ignore
-    from Bio.Seq import Seq  # type: ignore
-    return SeqRecord(Seq(entry["sequence_string"]), id=entry["sequence_id"], description="")
+def create_seqrecord(sequence_string: str, id: str):
+    from Bio.SeqRecord import SeqRecord
+    from Bio.Seq import Seq
+    return SeqRecord(Seq(sequence_string), id=id, description="")
 
+# ------------------ New helper functions for sequence status handling ------------------ #
+
+def get_pending_uuids(sequence_dict: SequencesDict) -> List[str]:
+    """Return list of zip filenames that are still pending processing."""
+    pending_seq_uuids = []
+    for sequence_data in sequence_dict.values():
+        if sequence_data["status"] in ("pending", "pending_external"):
+            assert sequence_data["seq_uuid"], f"Error in Cache! {sequence_data}"
+            pending_seq_uuids.append(sequence_data["seq_uuid"])
+    return pending_seq_uuids
+
+
+def find_completed_in_cache(pending_seq_uuids: List[str]) -> Dict[str, float]:
+    """Locate expected zipfiles in the cache directory and return mapping of filename -> ctime."""
+    expected_zipfiles = [f"{seq_uuid}.zip" for seq_uuid in pending_seq_uuids]
+    idr_zip_dir = get_zip_by_idr_dir()
+    completed: Dict[str, float] = {}
+    for file in idr_zip_dir.iterdir():
+        if file.name in expected_zipfiles:
+            completed[file.name] = file.stat().st_ctime
+    return completed
+
+
+def update_sequences_with_completed(
+    sequences_data: SequencesDict,
+    completed_mapping: Dict[str, float],
+) -> List[str]:
+    """Mutate `sequences` in place based on completed_mapping.
+
+    Returns a list of sequence_ids that are still pending.
+    """
+    pending_sequence_ids: List[str] = []
+    idr_zip_dir = get_zip_by_idr_dir()
+    for seq_data in sequences_data.values():
+        seq_uuid = seq_data["seq_uuid"]
+        expected = f"{seq_uuid}.zip" if seq_uuid else None
+        if expected and expected in completed_mapping:
+            seq_data["zip_path"] = str(idr_zip_dir / expected)
+            seq_data["seq_uuid"] = None
+            seq_data["end_time"] = completed_mapping[expected]
+            seq_data["status"] = "complete"
+        elif seq_data["status"] in ("pending", "pending_external"):
+            pending_sequence_ids.append(seq_data["sequence_id"])
+    return pending_sequence_ids
+
+
+def get_completed_zip_paths(sequences_data: SequencesDict, require_all_complete: bool = False) -> List[str]:
+    """Return absolute paths for zipfiles that are available for the provided sequences."""
+    completed_zip_paths: List[str] = []
+    idr_zip_dir = get_zip_by_idr_dir()
+    for seq_data in sequences_data.values():
+        if seq_data["zip_path"]:
+            completed_zip_paths.append(seq_data["zip_path"])
+            continue
+        seq_uuid = seq_data["seq_uuid"]
+        if seq_uuid:
+            candidate = idr_zip_dir / f"{seq_uuid}.zip"
+            if candidate.exists():
+                completed_zip_paths.append(str(candidate))
+        elif require_all_complete:
+            raise ValueError(f"Sequence {seq_data['sequence_id']} is not complete")
+    return completed_zip_paths
 # ------------------------------------------------------------------------------- #
 
 # Web image imports (lightweight)
@@ -416,7 +470,7 @@ def merge_zip_archives(zip_list: List[str], destination_filepath: str) -> str:
 
 def ensure_volume_directories() -> None:
     """Ensure the required directories exist in the mounted volume."""
-    for directory in [zip_by_fasta_dir(), zip_by_idr_dir(), runs_dir()]:
+    for directory in [get_zip_by_fasta_dir(), get_zip_by_idr_dir(), get_runs_dir()]:
         if not directory.exists():
             logger.warning(f"Volume directory {directory} does not exist, creating it")
             directory.mkdir(parents=True, exist_ok=True)
@@ -430,34 +484,47 @@ def ensure_volume_directories() -> None:
 )  
 def retry_pending_sequences(run_id: str):
     """Retry processing for sequences that are still pending."""
-    json_path = run_json_path(run_id)
-    progress_data = read_json(json_path)
+    progress_data = get_run_metadata(run_id)
 
-    if progress_data.get("status") == "completed":
-        logger.warning(f"Run {run_id} is already completed, skipping retry")
+    if progress_data.get("status") == "complete":
+        logger.warning(f"Run {run_id} is already complete, skipping retry")
         return
-
-    pending_entries: List[SequenceEntry] = []
-    for entry in read_jsonl_entries(run_jsonl_path(run_id)):
-        if entry.get("status") == "pending":
-            pending_entries.append(entry)  # type: ignore[arg-type]
-
-    idr_filenames = idr_zip_filenames()
-    pending_sequences: List[SequenceInput] = []
-    for entry in pending_entries:
-        if f"{entry['seq_uuid']}.zip" not in idr_filenames:
-            seq_record = seqrecord_from_entry(entry)
-            pending_sequences.append(SequenceInput(sequence=seq_record, seq_uuid=entry["seq_uuid"]))
-
-    # Spawn processing jobs for novel sequences using spawn_map
-    if pending_sequences:
-        logger.info(f"Spawning {len(pending_sequences)} processing jobs")
-        process_single_sequence.spawn_map(pending_sequences)
-    else:
-        logger.info("No novel sequences to process - all sequences are cached")
-
-	
     
+    # NOTE: This function will be refactored if errors persist
+    sequences_data = progress_data["sequences"]
+    pending_uuids = get_pending_uuids(sequences_data)
+    if not pending_uuids:
+        logger.error(f"No pending sequences...run status should have been marked complete!")
+        return
+    completed_mapping = find_completed_in_cache(pending_uuids)
+    pending_sequence_ids = update_sequences_with_completed(sequences_data, completed_mapping)
+    logger.info(f"Retrying {len(pending_sequence_ids)} pending sequences")
+    logger.info(f"Pending ids: {pending_sequence_ids}")
+    logger.warning(f"Re-spawning is not implemented yet!")
+    return
+    # # Build pending sequence inputs from the run's JSON sequences mapping
+    # sequences: Dict[str, dict] = progress_data.get("sequences", {})
+    # # Key: sequence string, Value: SequenceRunData (dict)
+
+    # idr_filenames = idr_zip_filenames()
+    # pending_sequences: List[SequenceInput] = []
+    # for seq_str, data in sequences.items():
+    #     if data["status"] == "pending":
+    #         seq_uuid = data["seq_uuid"]
+    #         if not seq_uuid:
+    #             continue
+    #         expected_zip = f"{seq_uuid}.zip"
+    #         if expected_zip not in idr_filenames:
+    #             seq_record = create_seqrecord(seq_str, data.get("sequence_id", "<unknown id>"))
+    #             pending_sequences.append(SequenceInput(sequence=seq_record, seq_uuid=seq_uuid))
+
+    # # Spawn processing jobs for novel sequences using spawn_map
+    # if pending_sequences:
+    #     logger.info(f"Spawning {len(pending_sequences)} processing jobs")
+    #     process_single_sequence.spawn_map(pending_sequences)
+    # else:
+    #     logger.info("No novel sequences to process - all sequences are cached")
+
 
 ###
 #processing_cpu_request_and_limit = (0.125, 0.15)
@@ -467,7 +534,7 @@ def retry_pending_sequences(run_id: str):
     timeout=TIMEOUT_SECONDS,
     scaledown_window=10,
     #cpu=processing_cpu_request_and_limit,
-    #max_containers=10
+    # max_containers=16
     # enable_memory_snapshot=True
 )
 def process_single_sequence(
@@ -484,7 +551,7 @@ def process_single_sequence(
     amino_acid_groupings = TYPEALL
     num_scrambled_sequences = NUM_SCRAMBLED_SEQUENCES
     random_seed = set_random_seed(DEFAULT_RANDOM_SEED)
-    output_dir = zip_by_idr_dir()
+    output_dir = get_zip_by_idr_dir()
 
     # Create an isolated working directory for this worker process
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -505,7 +572,8 @@ def process_single_sequence(
             )
 
             # Locate the zip produced by Nardini (there should be exactly one)
-            zip_files = list(Path(tmp_path).glob("nardini-data-*.zip"))
+            files = tmp_path.iterdir()
+            zip_files = [f for f in files if f.name.endswith(".zip")]
             if len(zip_files) != 1:
                 raise RuntimeError(
                     f"Expected one zip for sequence {sequence.id}, found {len(zip_files)}"
@@ -556,6 +624,7 @@ def fastapi_app():
     async def upload_fasta(file: UploadFile = File(...)) -> dict:
         """Validates the FASTA file, spawns processing job, and returns the run_id."""
         # Validate file type
+        logger.debug(f"Uploading file: {file.filename} at {time.time()}")
         if not file.filename or not file.filename.lower().endswith(
             (".fasta", ".fa", ".fas")
         ):
@@ -587,6 +656,7 @@ def fastapi_app():
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
             
+            logger.debug(f"Starting to parse sequences at {time.time()}")
             try:
                 parsed_sequences = read_sequences_from_filename(
                     temp_file_path,
@@ -605,93 +675,87 @@ def fastapi_app():
             raise HTTPException(status_code=400, detail=f"Failed to parse FASTA file: {e}")
         
         # Create set of current sequence strings
-        current_sequence_strings = {str(seq.seq) for seq in parsed_sequences}
-        logger.info(f"Processing {len(current_sequence_strings)} unique sequences")
+        sequence_strings = {str(seq.seq) for seq in parsed_sequences}
+        logger.info(f"Processing {len(sequence_strings)} unique sequences")
         
-        # Build sequence mapping and consolidate entries from existing .jsonl files
-        # Consolidate entries from existing runs that match current sequences
-        consolidated_entries = consolidate_entries_for_sequences(current_sequence_strings)
+        # Build sequence map from existing runs that match current sequences
+        sequences_data = create_sequences_data(sequence_strings)
         
         # Generate run_id and prepare sequence inputs
         run_id = str(uuid4())
-        sequence_inputs = []
-        cached_sequences = 0
-        novel_sequences = 0
-        
-        # Process sequences and create entries for any missing ones
-        for seq in parsed_sequences:
-            sequence_string = str(seq.seq)
-            
-            if sequence_string in consolidated_entries:
-                entry = consolidated_entries[sequence_string]
-                
-                if entry["status"] == "cached":
-                    cached_sequences += 1
-                    logger.info(f"Found cached sequence: {seq.id}")
-                else:
-                    # Reuse existing UUID for pending sequence
-                    # Consider it cached for now
-                    seq_uuid = entry["seq_uuid"]
-                    cached_sequences += 1
-                    logger.info(f"Reusing existing UUID for pending sequence {seq.id}: {seq_uuid}")
+        novel_sequences = []
+
+        for sequence in parsed_sequences:
+            seq_str = str(sequence.seq)
+            seq_data = sequences_data[seq_str]
+            if seq_data.get("status") == "pending":
+                novel_sequences.append(sequence)
             else:
-                # Truly novel sequence, generate new UUID and entry
-                seq_uuid = str(uuid4())
-                novel_sequences += 1
-                consolidated_entries[sequence_string] = {
-                    "sequence_string": sequence_string,
-                    "seq_uuid": seq_uuid,
-                    "sequence_id": seq.id,
-                    "status": "pending",
-                    "zip_path": None
-                }
-                
-                sequence_inputs.append(SequenceInput(
-                    sequence=seq,
-                    seq_uuid=seq_uuid
-                ))
-                logger.info(f"Novel sequence {seq.id} assigned new UUID: {seq_uuid}")
+                if seq_data.get("status") == "pending_external":
+                    logger.warning(f"We must ensure external sequence uuid {seq_data.get('seq_uuid')} is not stale/failed!")
+                    continue
+                assert seq_data.get("status") == "cached"
+
+        novel_sequences.sort(key=lambda x: len(str(x.seq)), reverse=True)
         
-        # Create {run_id}.jsonl file with consolidated entries
-        jsonl_path = run_jsonl_path(run_id)
-        write_jsonl_entries(jsonl_path, list(consolidated_entries.values()))
-            # for seq in parsed_sequences:
-            #     sequence_string = str(seq.seq)
-            #     entry = consolidated_entries[sequence_string]
-            #     f.write(json.dumps(entry) + "\n")
-        
-        # Create clean .json metadata file (no full sequence data)
-        run_metadata = {
-            "status": "in_progress",
-            "total_sequences": len(parsed_sequences),
-            "cached_sequences": cached_sequences,
-            "novel_sequences": novel_sequences,
-            "merged_zip_filename": None,
-            "started_at": time.time(),
-            "completed_at": None
-        }
-        
-        json_path = run_json_path(run_id)
-        write_json(json_path, run_metadata)
-        
-        # Spawn processing jobs for novel sequences using spawn_map
+         
         job_ids = []
-        if sequence_inputs:
-            logger.info(f"Spawning {len(sequence_inputs)} processing jobs")
-            jobs = await process_single_sequence.spawn_map.aio(sequence_inputs)
-            job_ids = [job.object_id for job in jobs]
+        if novel_sequences:
+            logger.debug(f"First sequence length: {len(str(novel_sequences[0].seq))}")
+            logger.debug(f"Last sequence length: {len(str(novel_sequences[-1].seq))}")
+            logger.info(f"Spawning {len(novel_sequences)} processing jobs")
+            logger.debug(f"Starting to spawn at {time.time()}")
+            for seq in novel_sequences:
+                seq_str = str(seq.seq)
+                seq_data = sequences_data[seq_str]
+                assert seq_data.get("status") == "pending", f"Sequence {seq.id} is not pending"
+                assert seq_data.get("seq_uuid"), f"Sequence {seq.id} has no seq_uuid"
+                seq_uuid = seq_data.get("seq_uuid")
+                logger.info(f"Spawning job for sequence {seq.id}")
+                call = process_single_sequence.spawn(SequenceInput(sequence=seq, seq_uuid=seq_uuid))
+                job_ids.append(call.object_id)
+                # Update sequences map in the run JSON with job details
+                sequences_data[seq_str] = SequenceData(
+                    start_time=time.time(),
+                    end_time=None,
+                    seq_uuid=seq_uuid,
+                    sequence_id=seq.id,
+                    status="pending",
+                    zip_path=None,
+                    job_id=call.object_id,
+                )
         else:
             logger.info("No novel sequences to process - all sequences are cached")
         
-        logger.info(f"Created run {run_id} with {run_metadata['novel_sequences']} novel and {run_metadata['cached_sequences']} cached sequences")
+        total_sequence_count = len(parsed_sequences)
+        cached_sequence_count = total_sequence_count - len(novel_sequences)
+        # Create .json metadata file for the run
+        run_metadata = RunData(
+            status="in_progress",
+            sequences=sequences_data,
+            total_sequences=total_sequence_count,
+            cached_sequences=cached_sequence_count,
+            merged_zip_filename=None,
+            submitted_at=time.time(),
+            completed_at=None
+        )
+        def validate_run_metadata(run_metadata: RunData) -> None:
+            # TODO: validate JSON before writing to volume
+            assert run_metadata["status"] == "in_progress", "Run status must be in_progress"
+            # ... add remaining validation here
+        validate_run_metadata(run_metadata)
         
+        write_run_metadata_to_volume(run_id, run_metadata)
+        
+        
+        logger.info(f"Submitted run {run_id}. {run_metadata['cached_sequences']}/{run_metadata['total_sequences']} sequences are cached")
+
         vol.commit()
         return {
             "run_id": run_id,
             "status": "submitted", 
             "message": "Job submitted for processing",
             "total_sequences": run_metadata["total_sequences"],
-            "novel_sequences": run_metadata["novel_sequences"],
             "cached_sequences": run_metadata["cached_sequences"],
             "job_ids": job_ids
         }
@@ -701,49 +765,41 @@ def fastapi_app():
         """Check the status of a processing job."""
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
-        
+
         try:
-            # Read progress from volume
-            json_path = run_json_path(run_id)
+            json_path = get_run_json_path(run_id)
             if not json_path.exists():
                 raise HTTPException(status_code=404, detail="Run not found")
-            progress_data = read_json(json_path)
-            
-            pending_entries: List[SequenceEntry] = []
-            pending_sequences: List[str] = []
-            if progress_data.get("status") == "completed":
-                return ProgressData(
-                    run_id=run_id,
-                    status="completed",
-                    pending_sequences=[],
-                )
-            else:
-                # Read the jsonl file and gather pending entries
-                for entry in read_jsonl_entries(run_jsonl_path(run_id)):
-                    if entry.get("status") == "pending":
-                        pending_entries.append(entry)  # type: ignore[arg-type]
-            
-            if pending_entries:
-                pending_sequences = missing_pending_sequences(pending_entries)
-            
-            if pending_sequences:
-                return ProgressData(
-                    run_id=run_id,
-                    status="in_progress",
-                    pending_sequences=pending_sequences
-                )
-            else:
-                # Update the .json file to the completed status
-                progress_data["status"] = "completed"
-                progress_data["completed_at"] = time.time()
-                write_json(json_path, progress_data)
+
+            progress_data = get_run_metadata(run_id)
+            sequences_data = progress_data["sequences"]
+
+            # If the run is already complete we can short-circuit the work below.
+            if progress_data["status"] == "complete":
+                return ProgressData(run_id=run_id, status="complete", pending_sequences=[])
+
+            # 1. Determine which sequences are still pending.
+            pending_seq_uuids = get_pending_uuids(sequences_data)
+
+            # 2. Look in the cache directory for those expected zip files.
+            completed_mapping = find_completed_in_cache(pending_seq_uuids)
+
+            # 3. Update the in-memory metadata for any sequences we just discovered.
+            pending_sequence_ids = update_sequences_with_completed(sequences_data, completed_mapping)
+
+            if pending_sequence_ids:
+                # Persist intermediate progress and return an in-progress response.
+                write_run_metadata_to_volume(run_id, progress_data)
                 vol.commit()
-                return ProgressData(
-                    run_id=run_id,
-                    status="completed",
-                    pending_sequences=[]
-                )
-            
+                return ProgressData(run_id=run_id, status="in_progress", pending_sequences=pending_sequence_ids)
+
+            # 4. If no pending sequences remain, mark the run as complete.
+            progress_data["status"] = "complete"
+            progress_data["completed_at"] = max(completed_mapping.values()) if completed_mapping else time.time()
+            write_run_metadata_to_volume(run_id, progress_data)
+            vol.commit()
+            return ProgressData(run_id=run_id, status="complete", pending_sequences=[])
+
         except HTTPException:
             raise
         except Exception as e:
@@ -755,31 +811,41 @@ def fastapi_app():
         """Download the results zip file."""
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
-        
-        try:
-            merged_zip_path = zip_by_fasta_dir() / f"{run_id}.zip"
-            if not merged_zip_path.exists():
-                try:
-                    completed_zip_paths = zip_paths_for_run(run_id)
-                except FileNotFoundError as e:
-                    logger.warning(str(e))
-                    raise HTTPException(status_code=404, detail="Zip file not found. Job may still be in progress.")
 
-                zip_file = merge_zip_archives(completed_zip_paths, str(merged_zip_path))
-                assert zip_file == str(merged_zip_path)
-                assert zip_file.endswith(f"{run_id}.zip")
+        try:
+            merged_zip_path = get_zip_by_fasta_dir() / f"{run_id}.zip"
+
+            # (1) Build the merged archive if it does not yet exist.
+            if not merged_zip_path.exists():
+                run_metadata = get_run_metadata(run_id)
+                sequences_data = run_metadata["sequences"]
+                pending_uuids = get_pending_uuids(sequences_data)
+                completed_mapping = find_completed_in_cache(pending_uuids)
+                pending_sequence_ids = update_sequences_with_completed(sequences_data, completed_mapping)
+                if pending_sequence_ids:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Results are not ready yet. Some sequences are still pending.",
+                    )
+                completed_zip_paths = get_completed_zip_paths(sequences_data, require_all_complete=True)
+                merged_zip_path = Path(merge_zip_archives(completed_zip_paths, str(merged_zip_path)))
+                
+                run_metadata["merged_zip_filename"] = str(merged_zip_path)
+                run_metadata["completed_at"] = time.time()
+                run_metadata["status"] = "complete"
+                write_run_metadata_to_volume(run_id, run_metadata)
                 vol.commit()
 
-            # Read the zip file directly from the filesystem using pathlib
+            # (2) Read the merged archive and send it back to the client.
             zip_data = merged_zip_path.read_bytes()
-            
-            # Return the zip file as a downloadable response
             return Response(
                 content=zip_data,
                 media_type="application/zip",
-                headers={"Content-Disposition": f"attachment; filename={run_id}.zip"}
+                headers={"Content-Disposition": f"attachment; filename={run_id}.zip"},
             )
-            
+
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error downloading zip for {run_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Error downloading file: {str(e)}")
