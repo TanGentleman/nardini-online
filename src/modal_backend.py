@@ -79,6 +79,7 @@ SequencesMapping = Dict[SequenceString, SequenceData]
 class RunData(TypedDict):
     status: Literal["in_progress", "complete"]
     fasta_filename: str
+    output_filename: str
     sequences: SequencesMapping
     total_sequences: int
     cached_sequences: int
@@ -482,12 +483,24 @@ def merge_zip_archives(zip_list: List[str], destination_filepath: str) -> str:
     logger.info(f"Merged zip file created at {destination_filepath}")
     return destination_filepath
 
-def ensure_volume_directories() -> None:
+def ensure_volume_directories() -> bool:
     """Ensure the required directories exist in the mounted volume."""
+    was_created = False
     for directory in [get_zip_by_fasta_dir(), get_zip_by_idr_dir(), get_runs_dir()]:
         if not directory.exists():
             logger.warning(f"Volume directory {directory} does not exist, creating it")
             directory.mkdir(parents=True, exist_ok=True)
+            was_created = True
+    return was_created
+
+def sanitize_output_filename(filename: str) -> str:
+    if not filename:
+        raise ValueError("Filename is required")
+    if len(filename) > 250:
+        filename = filename[:250]
+    if not filename.endswith(".zip"):
+        filename = filename + ".zip"
+    return filename
 
 @app.function(
     image=nardini_image,
@@ -632,7 +645,7 @@ def fastapi_app():
         return {"status": "healthy", "service": "nardini-backend"}
 
     @api.post("/upload_fasta", summary="Upload a FASTA file and spawn processing job")
-    async def upload_fasta(file: UploadFile = File(...)) -> dict:
+    async def upload_fasta(file: UploadFile = File(...), output_filename: str = None) -> dict:
         """Validates the FASTA file, spawns processing job, and returns the run_id."""
         # Validate file type
         logger.debug(f"Uploading file: {file.filename} at {time.time()}")
@@ -644,9 +657,14 @@ def fastapi_app():
                 status_code=400,
                 detail="Invalid file type. Please upload a FASTA file (.fasta, .fa, .fas).",
             )
+        if output_filename:
+            zip_output_filename = sanitize_output_filename(output_filename)
+        else:
+            zip_output_filename = sanitize_output_filename(original_filename)
         
-        ensure_volume_directories()
-        vol.commit()
+        was_created = ensure_volume_directories()
+        if was_created:
+            vol.commit()
         
         try:
             # Read and validate file content
@@ -747,6 +765,7 @@ def fastapi_app():
             status="in_progress",
             sequences=sequences_data,
             fasta_filename=original_filename,
+            output_filename=zip_output_filename,
             total_sequences=total_sequence_count,
             cached_sequences=cached_sequence_count,
             merged_zip_filename=None,
@@ -821,17 +840,23 @@ def fastapi_app():
             raise HTTPException(status_code=500, detail=f"Error checking status: {str(e)}")
 
     @api.get("/download/{run_id}", summary="Download results")
-    async def download_zip_file(run_id: str):
+    async def download_zip_file(run_id: str, output_filename: str = None):
         """Download the results zip file."""
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
 
         try:
+            merged_zip_path = None
+            run_metadata = get_run_metadata(run_id)
+            if output_filename:
+                zip_output_filename = sanitize_output_filename(output_filename)
+            else:
+                zip_output_filename = run_metadata["output_filename"]
+            
+            assert zip_output_filename.endswith(".zip"), "Output filename must end with .zip"
             merged_zip_path = get_zip_by_fasta_dir() / f"{run_id}.zip"
-
             # (1) Build the merged archive if it does not yet exist.
             if not merged_zip_path.exists():
-                run_metadata = get_run_metadata(run_id)
                 sequences_data = run_metadata["sequences"]
                 pending_uuids = get_pending_uuids(sequences_data)
                 completed_mapping = find_completed_in_cache(pending_uuids)
@@ -855,7 +880,7 @@ def fastapi_app():
             return Response(
                 content=zip_data,
                 media_type="application/zip",
-                headers={"Content-Disposition": f"attachment; filename={run_id}.zip"},
+                headers={"Content-Disposition": f"attachment; filename={zip_output_filename}"},
             )
 
         except HTTPException:
