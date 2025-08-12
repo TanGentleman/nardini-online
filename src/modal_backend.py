@@ -498,6 +498,11 @@ def sanitize_output_filename(filename: str) -> str:
         raise ValueError("Filename is required")
     if len(filename) > 250:
         filename = filename[:250]
+    # Remove any potential .fasta extension
+    suffix = filename.split(".")[-1]
+    if suffix in ["fasta", "fa", "fas"]:
+        suffix_len = len(suffix) + 1
+        filename = filename[:-suffix_len]
     if not filename.endswith(".zip"):
         filename = filename + ".zip"
     return filename
