@@ -6,11 +6,15 @@ The backend uses Modal's job queue pattern with:
 - A lightweight FastAPI web server for handling uploads and spawning jobs
 - A heavy Nardini worker for processing sequences
 
-The backend exposes a `/upload_fasta` endpoint that accepts a FASTA file,
-spawns a Nardini analysis job, and returns a run_id for tracking.
+Endpoints:
+- `/health` — service health check
+- `/upload_fasta` — accepts a FASTA file, spawns jobs, and returns a run_id
+- `/status/{run_id}` — returns pending sequence IDs or completion state
+- `/download/{run_id}` — returns merged results zip when complete
+- `/retry/{run_id}` — re-checks cache and re-spawns work (stub)
 
 Deployment:
------------
+------------
 modal deploy modal_backend.py
 
 Example usage with curl:
@@ -32,7 +36,7 @@ Volume layout and files written:
 Key environment variables (with defaults):
 -----------------------------------------
 - VOLUME_DIR=/data
-- VOLUME_NAME=nardini_halophile_test_dev
+- VOLUME_NAME=nardini_volume_dev
 - TIMEOUT_SECONDS=10800
 - MAX_UPLOAD_MB=10
 """
@@ -43,7 +47,7 @@ import os
 import time
 import tempfile
 import modal
-import zipfile 
+import zipfile
 from uuid import uuid4
 import logging
 from typing import Any, List, Dict, Optional
@@ -70,12 +74,12 @@ class SequenceData(TypedDict):
     zip_path: Optional[str]
     job_id: Optional[str]
 
-class SequencesDict(TypedDict):
-    sequences: Dict[SequenceString, SequenceData]
+SequencesMapping = Dict[SequenceString, SequenceData]
 
 class RunData(TypedDict):
     status: Literal["in_progress", "complete"]
-    sequences: SequencesDict
+    fasta_filename: str
+    sequences: SequencesMapping
     total_sequences: int
     cached_sequences: int
     merged_zip_filename: Optional[str]
@@ -88,7 +92,7 @@ logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("nardini_backend_dev")
+logger = logging.getLogger(__name__)
 
 # Configurable parameters with env-variable overrides
 VOLUME_DIR = Path(os.getenv("VOLUME_DIR", "/data"))
@@ -124,14 +128,17 @@ vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 # ---------------------- Helper utilities (paths, IO, scans) ---------------------- #
 def get_runs_dir() -> Path:
+    """Absolute path to the directory storing per-run JSON metadata files."""
     return VOLUME_DIR / "runs"
 
 
 def get_zip_by_idr_dir() -> Path:
+    """Absolute path to per-sequence zip outputs, keyed by `seq_uuid`."""
     return VOLUME_DIR / "zipfiles" / "by_idr"
 
 
 def get_zip_by_fasta_dir() -> Path:
+    """Absolute path to merged zip outputs, keyed by `run_id`."""
     return VOLUME_DIR / "zipfiles" / "by_fasta"
 
 
@@ -157,9 +164,15 @@ def write_run_metadata_to_volume(run_id: str, data: RunData) -> None:
     path = get_run_json_path(run_id)
     write_json(path, data)
 
-def create_sequences_data(sequence_strings: set[str]) -> SequencesDict:
-    """Scan existing run JSON files and return sequence data for the provided sequences."""
-    sequences_data: SequencesDict = {}
+def create_sequences_data(sequence_strings: set[str]) -> SequencesMapping:
+    """Build a mapping of sequence string -> metadata by scanning prior runs.
+
+    If a sequence appears in multiple runs, a cached status is preferred over pending.
+    Any sequences not found are initialized as pending with a fresh UUID.
+    """
+    # Copy to avoid mutating the caller's set
+    sequence_strings = set(sequence_strings)
+    sequences_data: SequencesMapping = {}
     for path in get_runs_dir().iterdir():
         if path.suffix == ".json" and path.is_file():
             try:
@@ -204,15 +217,16 @@ def create_sequences_data(sequence_strings: set[str]) -> SequencesDict:
     return sequences_data
 
 
-def create_seqrecord(sequence_string: str, id: str):
+def create_seqrecord(sequence_string: str, sequence_id: str):
+    """Create a BioPython SeqRecord from a raw sequence string and identifier."""
     from Bio.SeqRecord import SeqRecord
     from Bio.Seq import Seq
-    return SeqRecord(Seq(sequence_string), id=id, description="")
+    return SeqRecord(Seq(sequence_string), id=sequence_id, description="")
 
 # ------------------ New helper functions for sequence status handling ------------------ #
 
-def get_pending_uuids(sequence_dict: SequencesDict) -> List[str]:
-    """Return list of zip filenames that are still pending processing."""
+def get_pending_uuids(sequence_dict: SequencesMapping) -> List[str]:
+    """Return list of `seq_uuid` values for sequences still pending processing."""
     pending_seq_uuids = []
     for sequence_data in sequence_dict.values():
         if sequence_data["status"] in ("pending", "pending_external"):
@@ -233,12 +247,12 @@ def find_completed_in_cache(pending_seq_uuids: List[str]) -> Dict[str, float]:
 
 
 def update_sequences_with_completed(
-    sequences_data: SequencesDict,
+    sequences_data: SequencesMapping,
     completed_mapping: Dict[str, float],
 ) -> List[str]:
-    """Mutate `sequences` in place based on completed_mapping.
+    """Mutate `sequences_data` in place with completion times.
 
-    Returns a list of sequence_ids that are still pending.
+    Returns a list of `sequence_id` values that are still pending.
     """
     pending_sequence_ids: List[str] = []
     idr_zip_dir = get_zip_by_idr_dir()
@@ -255,7 +269,7 @@ def update_sequences_with_completed(
     return pending_sequence_ids
 
 
-def get_completed_zip_paths(sequences_data: SequencesDict, require_all_complete: bool = False) -> List[str]:
+def get_completed_zip_paths(sequences_data: SequencesMapping, require_all_complete: bool = False) -> List[str]:
     """Return absolute paths for zipfiles that are available for the provided sequences."""
     completed_zip_paths: List[str] = []
     idr_zip_dir = get_zip_by_idr_dir()
@@ -480,7 +494,6 @@ def ensure_volume_directories() -> None:
     volumes={str(VOLUME_DIR): vol},
     timeout=TIMEOUT_SECONDS,
     scaledown_window=5,
-    # enable_memory_snapshot=True
 )  
 def retry_pending_sequences(run_id: str):
     """Retry processing for sequences that are still pending."""
@@ -527,14 +540,12 @@ def retry_pending_sequences(run_id: str):
 
 
 ###
-#processing_cpu_request_and_limit = (0.125, 0.15)
 @app.function(
     image=nardini_image,
     volumes={str(VOLUME_DIR): vol},
     timeout=TIMEOUT_SECONDS,
     scaledown_window=10,
-    #cpu=processing_cpu_request_and_limit,
-    # max_containers=16
+    # max_containers=50,
     # enable_memory_snapshot=True
 )
 def process_single_sequence(
@@ -625,7 +636,8 @@ def fastapi_app():
         """Validates the FASTA file, spawns processing job, and returns the run_id."""
         # Validate file type
         logger.debug(f"Uploading file: {file.filename} at {time.time()}")
-        if not file.filename or not file.filename.lower().endswith(
+        original_filename = file.filename
+        if not original_filename or not original_filename.lower().endswith(
             (".fasta", ".fa", ".fas")
         ):
             raise HTTPException(
@@ -634,6 +646,7 @@ def fastapi_app():
             )
         
         ensure_volume_directories()
+        vol.commit()
         
         try:
             # Read and validate file content
@@ -648,7 +661,7 @@ def fastapi_app():
                     detail=f"File is too large. Limit is {MAX_FILE_SIZE/(1024*1024)}MB."
                 )
 
-            # Parse sequences using the reference code with temporary file
+            # Parse sequences using the reference code with a temporary file
             file_content = content.decode('utf-8')
             
             # Create temporary file to use with read_sequences_from_filename
@@ -733,6 +746,7 @@ def fastapi_app():
         run_metadata = RunData(
             status="in_progress",
             sequences=sequences_data,
+            fasta_filename=original_filename,
             total_sequences=total_sequence_count,
             cached_sequences=cached_sequence_count,
             merged_zip_filename=None,
@@ -856,5 +870,6 @@ def fastapi_app():
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
         retry_pending_sequences.spawn(run_id)
+        return {"run_id": run_id, "status": "retry_submitted"}
 
     return api
