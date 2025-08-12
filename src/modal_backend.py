@@ -570,33 +570,45 @@ def process_single_sequence(
     processes cannot clash while writing output files. The produced zip archive is
     moved to the modal volume in `zipfiles/by_idr/{seq_uuid}.zip`.
     """
+    try:
+        output_path = _process_one_sequence_to_volume(sequence_input)
+        sequence = sequence_input["sequence"]
+        logging.info(f"Sequence {sequence.id} processed and added to volume at: {output_path}")
+    except Exception as e:
+        sequence = sequence_input.get("sequence")
+        seq_id = getattr(sequence, "id", "<unknown>")
+        logger.error(f"Error processing sequence {seq_id}: {e}")
+    return None
+
+
+def _process_one_sequence_to_volume(sequence_input: SequenceInput) -> str:
+    """Shared helper to run Nardini for one sequence and write the zip into the volume.
+
+    Returns absolute path to the written zip in `zipfiles/by_idr`.
+    Raises on error.
+    """
     sequence = sequence_input["sequence"]
     seq_uuid = sequence_input["seq_uuid"]
+
     amino_acid_groupings = TYPEALL
     num_scrambled_sequences = NUM_SCRAMBLED_SEQUENCES
     random_seed = set_random_seed(DEFAULT_RANDOM_SEED)
     output_dir = get_zip_by_idr_dir()
 
-    # Create an isolated working directory for this worker process
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
 
-        # Temporarily switch the current working directory so that Nardini writes
-        # inside the isolated directory.
         old_cwd = os.getcwd()
         os.chdir(tmp_path)
-
         try:
-            # Run the calculation
             calculate_zscore_and_plot(
-                [sequence],  # Preserve original API (expects list)
+                [sequence],
                 amino_acid_groupings,
                 num_scrambled_sequences,
                 random_seed,
             )
 
-            # Locate the zip produced by Nardini (there should be exactly one)
-            files = tmp_path.iterdir()
+            files = list(tmp_path.iterdir())
             zip_files = [f for f in files if f.name.endswith(".zip")]
             if len(zip_files) != 1:
                 raise RuntimeError(
@@ -604,29 +616,48 @@ def process_single_sequence(
                 )
 
             produced_zip_path = zip_files[0]
-
-            # Build a deterministic destination name to avoid collisions
-            # dest_zip_name = f"{seq_record.id}.zip"
             dest_path = Path(output_dir) / f"{seq_uuid}.zip"
-
-            # Move the zip file to the shared output directory
             shutil.move(str(produced_zip_path), str(dest_path))
-        
-        except Exception as e:
-            logger.error(f"Error processing sequence {sequence.id}: {e}")
-            return None
-
         finally:
-            # Restore the original cwd no matter what
             os.chdir(old_cwd)
 
-    output_to_zip = dest_path
-    if not output_to_zip.exists():
-        raise RuntimeError(f"Output zip file {output_to_zip} does not exist")
-    # Return the absolute path so the parent can build the mapping
-    logging.info(f"Sequence {sequence.id} processed and added to volume at: {output_to_zip}")
-    return None
+    if not Path(dest_path).exists():
+        raise RuntimeError(f"Output zip file {dest_path} does not exist")
+    return str(dest_path)
 
+
+@app.function(
+    image=nardini_image,
+    volumes={str(VOLUME_DIR): vol},
+    timeout=TIMEOUT_SECONDS,
+    scaledown_window=10,
+)
+def process_16_sequences(sequence_inputs: List[SequenceInput]) -> None:
+    """Process up to 16 sequences in parallel within a single worker.
+
+    Each sequence is executed in its own temporary directory to avoid file clashes.
+    The produced zip archives are moved to the modal volume in `zipfiles/by_idr/{seq_uuid}.zip`.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    if not sequence_inputs:
+        return None
+
+    # Use fixed 16 workers, capped by input size
+    max_local_workers = min(16, len(sequence_inputs))
+
+    with ProcessPoolExecutor(max_workers=max_local_workers) as executor:
+        future_to_input = {executor.submit(_process_one_sequence_to_volume, si): si for si in sequence_inputs}
+        for future in as_completed(future_to_input):
+            si = future_to_input[future]
+            sequence = si["sequence"]
+            try:
+                _ = future.result()
+                logger.info(f"Processed sequence {sequence.id}")
+            except Exception as e:
+                logger.error(f"Error processing sequence {sequence.id}: {e}")
+                continue
+    return None
 
 @app.function(
     image=web_image,
@@ -734,27 +765,63 @@ def fastapi_app():
         if novel_sequences:
             logger.debug(f"First sequence length: {len(str(novel_sequences[0].seq))}")
             logger.debug(f"Last sequence length: {len(str(novel_sequences[-1].seq))}")
-            logger.info(f"Spawning {len(novel_sequences)} processing jobs")
+            logger.info(f"Spawning {len(novel_sequences)} sequences in batches of 16")
             logger.debug(f"Starting to spawn at {time.time()}")
-            for seq in novel_sequences:
-                seq_str = str(seq.seq)
-                seq_data = sequences_data[seq_str]
-                assert seq_data.get("status") == "pending", f"Sequence {seq.id} is not pending"
-                assert seq_data.get("seq_uuid"), f"Sequence {seq.id} has no seq_uuid"
-                seq_uuid = seq_data.get("seq_uuid")
-                logger.info(f"Spawning job for sequence {seq.id}")
-                call = process_single_sequence.spawn(SequenceInput(sequence=seq, seq_uuid=seq_uuid))
-                job_ids.append(call.object_id)
-                # Update sequences map in the run JSON with job details
-                sequences_data[seq_str] = SequenceData(
-                    start_time=time.time(),
-                    end_time=None,
-                    seq_uuid=seq_uuid,
-                    sequence_id=seq.id,
-                    status="pending",
-                    zip_path=None,
-                    job_id=call.object_id,
-                )
+
+
+            USE_BATCH_PROCESSING = True
+            BATCH_SIZE = 16
+            if USE_BATCH_PROCESSING:
+                def chunked(seq_list, size):
+                    for i in range(0, len(seq_list), size):
+                        yield seq_list[i:i+size]
+
+                for batch in chunked(novel_sequences, BATCH_SIZE):
+                    batch_inputs: List[SequenceInput] = []
+                    for seq in batch:
+                        seq_str = str(seq.seq)
+                        seq_data = sequences_data[seq_str]
+                        assert seq_data.get("status") == "pending", f"Sequence {seq.id} is not pending"
+                        assert seq_data.get("seq_uuid"), f"Sequence {seq.id} has no seq_uuid"
+                        seq_uuid = seq_data.get("seq_uuid")
+                        batch_inputs.append(SequenceInput(sequence=seq, seq_uuid=seq_uuid))
+
+                    logger.info(f"Spawning batch of {len(batch_inputs)} sequences")
+                    call = process_16_sequences.spawn(batch_inputs)
+                    job_ids.append(call.object_id)
+
+                    # Update sequences map with job details for each sequence in the batch
+                    for seq in batch:
+                        seq_str = str(seq.seq)
+                        seq_uuid = sequences_data[seq_str]["seq_uuid"]
+                        sequences_data[seq_str] = SequenceData(
+                            start_time=time.time(),
+                            end_time=None,
+                            seq_uuid=seq_uuid,
+                            sequence_id=seq.id,
+                            status="pending",
+                            zip_path=None,
+                            job_id=call.object_id,
+                        )
+            else:
+                # Spawn single sequence jobs
+                for seq in novel_sequences:
+                    seq_str = str(seq.seq)
+                    seq_data = sequences_data[seq_str]
+                    assert seq_data.get("status") == "pending", f"Sequence {seq.id} is not pending"
+                    assert seq_data.get("seq_uuid"), f"Sequence {seq.id} has no seq_uuid"
+                    seq_uuid = seq_data.get("seq_uuid")
+                    call = process_single_sequence.spawn(SequenceInput(sequence=seq, seq_uuid=seq_uuid))
+                    job_ids.append(call.object_id)
+                    sequences_data[seq_str] = SequenceData(
+                        start_time=time.time(),
+                        end_time=None,
+                        seq_uuid=seq_uuid,
+                        sequence_id=seq.id,
+                        status="pending",
+                        zip_path=None,
+                        job_id=call.object_id,
+                    )
         else:
             logger.info("No novel sequences to process - all sequences are cached")
         
