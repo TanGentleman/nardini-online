@@ -288,13 +288,6 @@ def get_completed_zip_paths(sequences_data: SequencesMapping, require_all_comple
     return completed_zip_paths
 # ------------------------------------------------------------------------------- #
 
-# Web image imports (lightweight)
-with web_image.imports():
-    from fastapi import FastAPI, HTTPException, File, UploadFile
-    from fastapi.responses import Response
-    from Bio import SeqIO
-    from io import StringIO
-
 # The following functions are copied from nardini.utils.py
 # NOTE: See https://github.com/mshinn23/nardini/blob/main/nardini/utils.py
 def read_sequences_from_filename(sequence_filename, default_name, verbose=False):
@@ -316,6 +309,7 @@ def read_sequences_from_filename(sequence_filename, default_name, verbose=False)
     @returns seqio_sequences:       A list of sequence strings that were
                                     extracted from the sequence file.
     """
+    from Bio import SeqIO
     seqio_sequences = list()
     if sequence_filename is None:
         raise RuntimeError('This parameter cannot be `None`. Exiting.')
@@ -358,6 +352,8 @@ def read_sequences_from_string_list(list_of_sequences, default_name, verbose=Fal
     @returns seqio_sequences:       A list of sequence strings that were
                                     extracted from the sequence file.
     """
+    from Bio import SeqIO
+    from io import StringIO
     sequences = list()
     # This means that we have to create a fake record using the sequence content.
     for index, sequence in enumerate(list_of_sequences, start=1):
@@ -368,16 +364,6 @@ def read_sequences_from_string_list(list_of_sequences, default_name, verbose=Fal
     if verbose:
         print('Number of sequences read: {num}'.format(num=len(sequences)), end='\n\n')
     return sequences
-
-# Nardini image imports (heavy)
-with nardini_image.imports():
-    from nardini.constants import (
-        NUM_SCRAMBLED_SEQUENCES,
-        DEFAULT_RANDOM_SEED,
-        TYPEALL,
-    )
-    from nardini.score_and_plot import calculate_zscore_and_plot
-    from nardini.utils import set_random_seed
 
 ### NOTE Functions for stitching .zip results from each invocation together into final .zip
 #helper fxn for mergeZips
@@ -531,7 +517,27 @@ def retry_pending_sequences(run_id: str):
     pending_sequence_ids = update_sequences_with_completed(sequences_data, completed_mapping)
     logger.info(f"Retrying {len(pending_sequence_ids)} pending sequences")
     logger.info(f"Pending ids: {pending_sequence_ids}")
-    logger.warning(f"Re-spawning is not implemented yet!")
+    job_ids = []
+    for seq_str, data in sequences_data.items():
+        if data["status"] == "pending":
+            seq_uuid = data["seq_uuid"]
+            if not seq_uuid:
+                logger.error(f"Sequence {seq_str} has no seq_uuid")
+                continue
+            seq_record = create_seqrecord(seq_str, data.get("sequence_id"))
+            call = process_single_sequence.spawn(SequenceInput(sequence=seq_record, seq_uuid=seq_uuid))
+            job_ids.append(call.object_id)
+            # Update sequences map with job details for each sequence in the batch
+            sequences_data[seq_str] = SequenceData(
+                start_time=time.time(),
+                end_time=None,
+                seq_uuid=seq_uuid,
+                sequence_id=seq_record.id,
+                status="pending",
+                zip_path=None,
+                job_id=call.object_id,
+            )
+    logger.info(f"Spawned {len(job_ids)} jobs. Ids: {job_ids}")
     return
     # # Build pending sequence inputs from the run's JSON sequences mapping
     # sequences: Dict[str, dict] = progress_data.get("sequences", {})
@@ -556,6 +562,20 @@ def retry_pending_sequences(run_id: str):
     # else:
     #     logger.info("No novel sequences to process - all sequences are cached")
 
+
+@app.function(
+    image=nardini_image,
+    volumes={str(VOLUME_DIR): vol},
+)
+def migrate_run_metadata() -> None:
+    """Modify the run metadata all JSON files."""
+    for json_file in get_runs_dir().glob("*.json"):
+        run_metadata = get_run_metadata(json_file.stem)
+        run_metadata["output_filename"] = sanitize_output_filename(run_metadata["output_filename"])
+        logger.info(f"Modifying run metadata for {json_file.stem} to {run_metadata['output_filename']}")
+        write_run_metadata_to_volume(json_file.stem, run_metadata)
+    vol.commit()
+    return
 
 ###
 @app.function(
@@ -592,6 +612,13 @@ def _process_one_sequence_to_volume(sequence_input: SequenceInput) -> str:
     Returns absolute path to the written zip in `zipfiles/by_idr`.
     Raises on error.
     """
+    from nardini.constants import (
+        NUM_SCRAMBLED_SEQUENCES,
+        DEFAULT_RANDOM_SEED,
+        TYPEALL,
+    )
+    from nardini.score_and_plot import calculate_zscore_and_plot
+    from nardini.utils import set_random_seed
     sequence = sequence_input["sequence"]
     seq_uuid = sequence_input["seq_uuid"]
 
@@ -672,6 +699,8 @@ def process_16_sequences(sequence_inputs: List[SequenceInput]) -> None:
 )
 @modal.asgi_app()
 def fastapi_app():
+    from fastapi import FastAPI, HTTPException, File, UploadFile
+    from fastapi.responses import Response
     """Lightweight FastAPI application for handling uploads and job management."""
     api = FastAPI(title="Nardini Backend", version="1.0.0")
 
