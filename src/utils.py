@@ -8,9 +8,7 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
-from typing_extensions import Optional
 
-from config import BACKEND_URL, OUTPUTS_DIR
 from schemas import (
     ErrorResponse,
     HealthResponse,
@@ -51,7 +49,10 @@ def test_health(url: str):
 
 
 # Main function to run Nardini
-def upload_fasta(url: str, fasta_filepath: str):
+# TODO: Add param for output_filename
+def upload_fasta(
+    url: str, fasta_filepath: Path | str
+) -> UploadFastaResponse | ErrorResponse:
     """Submit a FASTA file for NARDINI analysis."""
     if not Path(fasta_filepath).exists():
         raise FileNotFoundError(f"File {fasta_filepath} does not exist")
@@ -69,7 +70,7 @@ def upload_fasta(url: str, fasta_filepath: str):
             job_ids=res["job_ids"],
         )
     else:
-        return f"Error: {response.status_code} {response.text}"
+        return ErrorResponse(error=f"Error: {response.status_code} {response.text}")
 
 
 def get_run_status(url: str, run_id: str):
@@ -90,12 +91,19 @@ def get_run_status(url: str, run_id: str):
         return f"Connection error: {e}"
 
 
+# TODO: Add param for output_filename
 def download_zip(
-    url: str, run_id: str, destination_dir: Path = OUTPUTS_DIR
-) -> Optional[Path]:
+    url: str, run_id: str, destination_dir: Path | str
+) -> SimplifiedDownloadResponse | ErrorResponse:
     """Download the results zip file for a completed analysis."""
     if not run_id:
         return ErrorResponse(error="Please provide a valid Run ID.")
+
+    destination_dir = Path(destination_dir)
+    if not destination_dir.exists():
+        raise FileNotFoundError(
+            f"Destination directory {destination_dir} does not exist"
+        )
 
     headers = _get_auth_headers()
     try:
@@ -150,17 +158,20 @@ def retry_sequences(url: str, run_id: str):
 
 
 # TODO: Move this to a JSON file on client-side, or associate runs with users in Modal Volume
-def save_run_info(run_id: str, fasta_filepath: str):
+def save_run_info(run_id: str, fasta_filepath: str, output_filepath: Path | str):
     """Save run information to a text file for reference."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    output_filename = OUTPUTS_DIR / f"run_info_{run_id}.txt"
+    output_filepath = Path(output_filepath)
+    if not output_filepath.parent.exists():
+        raise FileNotFoundError(
+            f"Destination directory {output_filepath.parent} does not exist"
+        )
 
-    with open(output_filename, "w") as f:
+    with open(output_filepath, "w") as f:
         f.write("NARDINI Analysis Run Information\n")
         f.write("================================\n")
         f.write(f"Timestamp: {timestamp}\n")
         f.write(f"FASTA File: {fasta_filepath}\n")
         f.write(f"Run ID: {run_id}\n")
-        f.write(f"Backend URL: {BACKEND_URL}\n")
 
-    return output_filename
+    return str(output_filepath)

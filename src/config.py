@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 # Configuration
-ROOT_DIR = Path(".")
+ROOT_DIR = Path(__file__).parent.parent
 DATA_DIR = ROOT_DIR / "data"
 INPUTS_DIR = DATA_DIR / "fasta_inputs"
 OUTPUTS_DIR = DATA_DIR / "zip_outputs"

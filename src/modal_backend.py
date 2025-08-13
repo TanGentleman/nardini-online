@@ -731,9 +731,11 @@ def fastapi_app():
         # Validate file type
         logger.debug(f"Uploading file: {file.filename} at {time.time()}")
         original_filename = file.filename
-        if not original_filename or not original_filename.lower().endswith(
-            (".fasta", ".fa", ".fas")
-        ):
+        if not original_filename or not original_filename.lower().endswith((
+            ".fasta",
+            ".fa",
+            ".fas",
+        )):
             raise HTTPException(
                 status_code=400,
                 detail="Invalid file type. Please upload a FASTA file (.fasta, .fa, .fas).",
