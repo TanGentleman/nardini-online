@@ -9,11 +9,12 @@ description = "A project for running FASTA operations"
 authors = [{name = "Tan", email = "tan@sahaya.cloud"}]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
     "requests",
     "ipykernel",
     "modal>=1.1.1",
+    "python-dotenv>=1.1.1",
 ]
 
 [project.optional-dependencies]
