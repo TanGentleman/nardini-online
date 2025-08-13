@@ -3,7 +3,7 @@ TypedDict schemas for FastAPI endpoints and backend metadata.
 These mirror the structures used in `modal_backend.py`.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from typing_extensions import Literal, TypedDict
 
@@ -43,6 +43,9 @@ class SimplifiedDownloadResponse(TypedDict):
 
 # ---- Backend metadata schemas (stored in volume as JSON) ----
 
+class SequenceInput(TypedDict):
+    sequence: Any  # Bio.SeqRecord object
+    seq_uuid: str
 
 class SequenceData(TypedDict):
     sequence_id: str

@@ -6,12 +6,13 @@ ROOT_DIR = Path(__file__).parent.parent
 DATA_DIR = ROOT_DIR / "data"
 INPUTS_DIR = DATA_DIR / "fasta_inputs"
 OUTPUTS_DIR = DATA_DIR / "zip_outputs"
+JSON_PATH = DATA_DIR / "run_info.json"
 
 
 def get_backend_url(dev=False):
     deployed_url = os.getenv(
         "DEPLOYED_URL",
-        "https://tangentleman--nardini-backend-dev-fastapi-app.modal.run",
+        "https://tangentleman--run-fasta-fastapi-app.modal.run",
     )
     if dev:
         dev_url = deployed_url.replace(".modal.run", "-dev.modal.run")
