@@ -21,14 +21,15 @@ curl -X POST "YOUR_MODAL_APP_URL/upload_fasta" \
 """
 
 import json
-from pathlib import Path
-import os
-import time
-import tempfile
-import modal
-import zipfile 
-from uuid import uuid4
 import logging
+import os
+import tempfile
+import time
+import zipfile
+from pathlib import Path
+from uuid import uuid4
+
+import modal
 
 # ---------------------- Environment configuration ---------------------- #
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -72,22 +73,22 @@ vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 # Web image imports (lightweight)
 with web_image.imports():
-    from fastapi import FastAPI, HTTPException, File, UploadFile
+    from fastapi import FastAPI, File, HTTPException, UploadFile
     from fastapi.responses import Response
 
 # Nardini image imports (heavy)
 with nardini_image.imports():
-    from concurrent.futures import ProcessPoolExecutor
     import functools
+    from concurrent.futures import ProcessPoolExecutor
 
     from nardini.constants import (
-        NUM_SCRAMBLED_SEQUENCES,
-        DEFAULT_RANDOM_SEED,
-        TYPEALL,
         DEFAULT_PREFIX_NAME,
+        DEFAULT_RANDOM_SEED,
+        NUM_SCRAMBLED_SEQUENCES,
+        TYPEALL,
     )
     from nardini.score_and_plot import calculate_zscore_and_plot
-    from nardini.utils import set_random_seed, read_sequences_from_filename
+    from nardini.utils import read_sequences_from_filename, set_random_seed
 
 ### NOTE Functions for stitching .zip results from each invocation together into final .zip
 #helper fxn for mergeZips
@@ -112,7 +113,7 @@ def _get_unique_filename(original_filename, used_filenames, zip_index):
   """Generate a unique filename by adding a suffix if the original is already used"""
   if original_filename not in used_filenames:
     return original_filename
-  
+
   # Extract filename and extension
   if '.' in original_filename:
     name, ext = original_filename.rsplit('.', 1)
@@ -120,12 +121,12 @@ def _get_unique_filename(original_filename, used_filenames, zip_index):
   else:
     name = original_filename
     ext = ''
-  
+
   # Try adding zip index first
   candidate = f"{name}_zip{zip_index}{ext}"
   if candidate not in used_filenames:
     return candidate
-  
+
   # If still duplicate, add a counter
   counter = 1
   while True:
@@ -139,23 +140,23 @@ def mergeZips(zipList, destination_filepath):
   """Merge multiple zip files into a single zip, combining sequences.tsv files into master_sequences.tsv"""
   if not zipList:
     raise ValueError("No zip files provided to merge")
-  
+
   destination_filepath = str(destination_filepath)
   if not destination_filepath.endswith(".zip"):
     destination_filepath = destination_filepath + '.zip'
-  
+
   # Use a temporary file for the master TSV to avoid working directory issues
   with tempfile.NamedTemporaryFile(mode='w+', suffix='.tsv', delete=False) as temp_tsv:
     masterTSVPath = temp_tsv.name
     # Write header
     header = ["ID", "original_seq", "most_similar_seq", "sum_abs_zscore_original_seq", "sum_abs_zscore_scrambled_seq"]
     temp_tsv.write('\t'.join(header) + '\n')
-  
+
   try:
     # Create a new zip file with the collected files
     with zipfile.ZipFile(destination_filepath, 'w') as merged_zip:
         used_filenames = set()  # Track filenames already added to prevent duplicates
-        
+
         for zip_index, zipPath in enumerate(zipList):
             with zipfile.ZipFile(zipPath, 'r') as zip_ref:
                 for file_info in zip_ref.infolist():
@@ -164,7 +165,7 @@ def mergeZips(zipList, destination_filepath):
                       # Handle potential duplicate filenames
                       unique_filename = _get_unique_filename(fileName, used_filenames, zip_index)
                       used_filenames.add(unique_filename)
-                      
+
                       # Read the file content from the original zip and write to the new zip
                       with zip_ref.open(file_info) as source_file:
                         merged_zip.writestr(unique_filename, source_file.read())
@@ -179,17 +180,17 @@ def mergeZips(zipList, destination_filepath):
         with open(masterTSVPath, 'r') as master_tsv_file:
           master_tsv_content = master_tsv_file.read()
           merged_zip.writestr('master_sequences.tsv', master_tsv_content)
-  
+
   finally:
     # Clean up the temporary file
     if os.path.exists(masterTSVPath):
       os.unlink(masterTSVPath)
-  
+
   if not Path(destination_filepath).exists():
     raise ValueError("Zip creation failed!")
   return destination_filepath
 
-###  
+###
 def process_single_sequence(
     seq_record,
     amino_acid_groupings,
@@ -268,7 +269,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta") as temp_file:
             temp_file.write(sequences_data["file_content"])
             temp_file_path = temp_file.name
-        
+
         try:
             parsed_sequences = read_sequences_from_filename(
                 temp_file_path, DEFAULT_PREFIX_NAME, verbose=False
@@ -276,22 +277,22 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         finally:
             if os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-        
+
         if not parsed_sequences:
             raise ValueError("No valid sequences found in FASTA file")
-        
+
         # Log parsed sequences info
         logger.info(f"Parsed {len(parsed_sequences)} sequences from FASTA file")
-        
+
         # Read existing analyzed sequences from the modal volume
         existing_sequence_map = {}
         seq_zip_maps_dir = VOLUME_DIR / "seq_zip_maps"
         if not seq_zip_maps_dir.exists():
             seq_zip_maps_dir.mkdir(parents=True, exist_ok=True)
-        
+
         cache_files = [f for f in os.listdir(seq_zip_maps_dir) if f.endswith(".json")]
         logger.info(f"Found {len(cache_files)} cache files")
-        
+
         for file in cache_files:
             with open(seq_zip_maps_dir / file, "r") as f:
                 # get the keys
@@ -300,7 +301,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
                     existing_sequence_map[key] = value["zip_filename"]
         existing_sequences = set(existing_sequence_map.keys())
         logger.info(f"Total cached sequences loaded: {len(existing_sequences)}")
-        
+
         # Create an in-progress file in the modal volume
         in_progress_filename = f"{run_id}_in_progress.json"
         # Track progress for each requested sequence plus global run status.
@@ -312,17 +313,17 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         # Populate per-sequence status (None means still pending).
         cached_count = 0
         novel_count = 0
-        
+
         for seq in parsed_sequences:
             sequence_string = str(seq.seq)  # seq is a Bio.SeqRecord object
-            
+
             if sequence_string in existing_sequences:
                 progress_dict[sequence_string] = existing_sequence_map[sequence_string]
                 cached_count += 1
             else:
                 progress_dict[sequence_string] = None
                 novel_count += 1
-        
+
         logger.info(f"Progress dict populated: {cached_count} cached, {novel_count} novel sequences")
         logger.info(f"Total progress dict entries (excluding special keys): {len([k for k in progress_dict.keys() if not k.startswith('_')])}")
 
@@ -344,7 +345,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
 
         # Run the analysis in parallel.
         calculation_start_time = time.time()
-        
+
         # Directory where workers should place their individual zip files
         worker_output_dir = VOLUME_DIR / "zipfiles" / "by_idr"
         if not worker_output_dir.exists():
@@ -390,7 +391,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
 
         # Collect all zip files corresponding to the requested sequences
         # Filter out special keys (_status, merged_zip_filename) and only get actual sequence zip paths
-        
+
         # Check each entry in progress_dict
         valid_entries = []
         invalid_entries = []
@@ -407,17 +408,17 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
                 continue
             else:
                 valid_entries.append((key, p))
-        
+
         logger.info(f"Collecting zip files: {len(valid_entries)} valid, {len(invalid_entries)} invalid entries")
         zip_files = [Path(p) for key, p in valid_entries]
-        
+
         if not zip_files:
             raise RuntimeError("Nardini completed but no .zip archive was found.")
 
         final_output_dir = VOLUME_DIR / "zipfiles" / "by_fasta"
         if not final_output_dir.exists():
             final_output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         merged_zip_path = final_output_dir / f"{run_id}.zip"
         zip_file = mergeZips(zip_files, merged_zip_path)
         # logger.info(zip_files)
@@ -434,7 +435,7 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
                     "processed_at": time.time(),
                     "run_id": run_id
                 }
-        
+
         # Write the updated mappings to the seq_zip_maps directory
         if seq_mappings_to_update:
             mapping_filename = f"{run_id}_mappings.json"
@@ -453,8 +454,8 @@ def process_nardini_job(sequences_data: dict, run_id: str) -> dict:
         end_time = time.time()
         return {
             "status": "completed",
-            "zip_filename": zip_file, 
-            "calculation_time": calculation_end_time - calculation_start_time, 
+            "zip_filename": zip_file,
+            "calculation_time": calculation_end_time - calculation_start_time,
             "total_time": end_time - start_time
         }
     except Exception as e:
@@ -498,17 +499,17 @@ def fastapi_app():
                 status_code=400,
                 detail="Invalid file type. Please upload a FASTA file (.fasta, .fa, .fas).",
             )
-        
+
         try:
             # Read and validate file content
             content = await file.read()
             if not content:
                 raise HTTPException(status_code=400, detail="File is empty.")
-            
+
             # MAX_FILE_SIZE is defined globally above
             if len(content) > MAX_FILE_SIZE:
                 raise HTTPException(
-                    status_code=413, 
+                    status_code=413,
                     detail=f"File is too large. Limit is {MAX_FILE_SIZE/(1024*1024)}MB."
                 )
 
@@ -517,19 +518,19 @@ def fastapi_app():
                 "file_content": content.decode('utf-8'),  # Pass raw FASTA content
                 "filename": file.filename
             }
-            
+
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to parse FASTA file: {e}")
-        
+
         finally:
             pass  # No temp file cleanup needed since we pass content directly
-        
+
         # Generate run ID and spawn processing job
         run_id = str(uuid4())
-        
+
         # Spawn the heavy processing job
         job_call = process_nardini_job.spawn(sequences_data, run_id)
-        
+
         return {
             "run_id": run_id,
             "job_id": job_call.object_id,
@@ -542,28 +543,28 @@ def fastapi_app():
         """Check the status of a processing job."""
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
-        
+
         try:
             # Read progress file from volume
             progress_file_path = f"{run_id}_in_progress.json"
             file_contents = vol.read_file(progress_file_path)
-            
+
             if not file_contents:
                 raise HTTPException(status_code=404, detail="Data for this run not found")
-            
+
             # Read the file contents
             file_contents_bytes = b""
             for chunk in file_contents:
                 file_contents_bytes += chunk
-            
+
             progress_data = json.loads(file_contents_bytes)
-            
+
             return {
                 "run_id": run_id,
                 "status": progress_data.get("_status", "unknown"),
                 "progress": progress_data
             }
-            
+
         except Exception as e:
             logger.error(f"Error checking status for {run_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Error checking status: {str(e)}")
@@ -573,29 +574,29 @@ def fastapi_app():
         """Download the results zip file."""
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
-        
+
         try:
             # Construct the path to the zip file in the volume
             volume_zip_path = f"zipfiles/by_fasta/{run_id}.zip"
-            
+
             # Read the zip file from the volume
             file_contents = vol.read_file(volume_zip_path)
-            
+
             if not file_contents:
                 raise HTTPException(status_code=404, detail="Zip file not found. Job may still be in progress.")
-            
+
             # Collect all chunks into bytes
             zip_data = b""
             for chunk in file_contents:
                 zip_data += chunk
-            
+
             # Return the zip file as a downloadable response
             return Response(
                 content=zip_data,
                 media_type="application/zip",
                 headers={"Content-Disposition": f"attachment; filename={run_id}.zip"}
             )
-            
+
         except Exception as e:
             logger.error(f"Error downloading zip for {run_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Error downloading file: {str(e)}")

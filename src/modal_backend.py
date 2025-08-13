@@ -42,17 +42,18 @@ Key environment variables (with defaults):
 """
 
 import json
-from pathlib import Path
-import os
-import time
-import tempfile
-import modal
-import zipfile
-from uuid import uuid4
 import logging
-from typing import Any, List, Dict, Optional
+import os
 import shutil
-from typing_extensions import TypedDict, Literal
+import tempfile
+import time
+import zipfile
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+import modal
+from typing_extensions import Literal, TypedDict
 
 SequenceString = str
 
@@ -193,7 +194,7 @@ def create_sequences_data(sequence_strings: set[str]) -> SequencesMapping:
                         seq_data["status"] = "cached"
                     else:
                         raise ValueError(f"Invalid sequence status: {seq_status}")
-                    
+
                     if seq_str in sequences_data:
                         # Prefer cached over pending
                         if sequences_data[seq_str]["status"] != "cached":
@@ -204,7 +205,7 @@ def create_sequences_data(sequence_strings: set[str]) -> SequencesMapping:
                 logger.warning(f"Failed to read {path}: {e}")
             except Exception as e:
                 logger.warning(f"Unexpected error reading {path}: {e}")
-    
+
     for seq_str in sequence_strings:
         sequences_data[seq_str] = SequenceData(
             sequence_id="TEMP_ID",
@@ -220,8 +221,8 @@ def create_sequences_data(sequence_strings: set[str]) -> SequencesMapping:
 
 def create_seqrecord(sequence_string: str, sequence_id: str):
     """Create a BioPython SeqRecord from a raw sequence string and identifier."""
-    from Bio.SeqRecord import SeqRecord
     from Bio.Seq import Seq
+    from Bio.SeqRecord import SeqRecord
     return SeqRecord(Seq(sequence_string), id=sequence_id, description="")
 
 # ------------------ New helper functions for sequence status handling ------------------ #
@@ -352,8 +353,9 @@ def read_sequences_from_string_list(list_of_sequences, default_name, verbose=Fal
     @returns seqio_sequences:       A list of sequence strings that were
                                     extracted from the sequence file.
     """
-    from Bio import SeqIO
     from io import StringIO
+
+    from Bio import SeqIO
     sequences = list()
     # This means that we have to create a fake record using the sequence content.
     for index, sequence in enumerate(list_of_sequences, start=1):
@@ -385,7 +387,7 @@ def _get_unique_filename(original_filename, used_filenames, zip_index):
   """Generate a unique filename by adding a suffix if the original is already used"""
   if original_filename not in used_filenames:
     return original_filename
-  
+
   # Extract filename and extension
   if '.' in original_filename:
     name, ext = original_filename.rsplit('.', 1)
@@ -393,12 +395,12 @@ def _get_unique_filename(original_filename, used_filenames, zip_index):
   else:
     name = original_filename
     ext = ''
-  
+
   # Try adding zip index first
   candidate = f"{name}_zip{zip_index}{ext}"
   if candidate not in used_filenames:
     return candidate
-  
+
   # If still duplicate, add a counter
   counter = 1
   while True:
@@ -498,7 +500,7 @@ def sanitize_output_filename(filename: str) -> str:
     volumes={str(VOLUME_DIR): vol},
     timeout=TIMEOUT_SECONDS,
     scaledown_window=5,
-)  
+)
 def retry_pending_sequences(run_id: str):
     """Retry processing for sequences that are still pending."""
     progress_data = get_run_metadata(run_id)
@@ -506,12 +508,12 @@ def retry_pending_sequences(run_id: str):
     if progress_data.get("status") == "complete":
         logger.warning(f"Run {run_id} is already complete, skipping retry")
         return
-    
+
     # NOTE: This function will be refactored if errors persist
     sequences_data = progress_data["sequences"]
     pending_uuids = get_pending_uuids(sequences_data)
     if not pending_uuids:
-        logger.error(f"No pending sequences...run status should have been marked complete!")
+        logger.error("No pending sequences...run status should have been marked complete!")
         return
     completed_mapping = find_completed_in_cache(pending_uuids)
     pending_sequence_ids = update_sequences_with_completed(sequences_data, completed_mapping)
@@ -539,29 +541,6 @@ def retry_pending_sequences(run_id: str):
             )
     logger.info(f"Spawned {len(job_ids)} jobs. Ids: {job_ids}")
     return
-    # # Build pending sequence inputs from the run's JSON sequences mapping
-    # sequences: Dict[str, dict] = progress_data.get("sequences", {})
-    # # Key: sequence string, Value: SequenceRunData (dict)
-
-    # idr_filenames = idr_zip_filenames()
-    # pending_sequences: List[SequenceInput] = []
-    # for seq_str, data in sequences.items():
-    #     if data["status"] == "pending":
-    #         seq_uuid = data["seq_uuid"]
-    #         if not seq_uuid:
-    #             continue
-    #         expected_zip = f"{seq_uuid}.zip"
-    #         if expected_zip not in idr_filenames:
-    #             seq_record = create_seqrecord(seq_str, data.get("sequence_id", "<unknown id>"))
-    #             pending_sequences.append(SequenceInput(sequence=seq_record, seq_uuid=seq_uuid))
-
-    # # Spawn processing jobs for novel sequences using spawn_map
-    # if pending_sequences:
-    #     logger.info(f"Spawning {len(pending_sequences)} processing jobs")
-    #     process_single_sequence.spawn_map(pending_sequences)
-    # else:
-    #     logger.info("No novel sequences to process - all sequences are cached")
-
 
 @app.function(
     image=nardini_image,
@@ -613,8 +592,8 @@ def _process_one_sequence_to_volume(sequence_input: SequenceInput) -> str:
     Raises on error.
     """
     from nardini.constants import (
-        NUM_SCRAMBLED_SEQUENCES,
         DEFAULT_RANDOM_SEED,
+        NUM_SCRAMBLED_SEQUENCES,
         TYPEALL,
     )
     from nardini.score_and_plot import calculate_zscore_and_plot
@@ -699,7 +678,7 @@ def process_16_sequences(sequence_inputs: List[SequenceInput]) -> None:
 )
 @modal.asgi_app()
 def fastapi_app():
-    from fastapi import FastAPI, HTTPException, File, UploadFile
+    from fastapi import FastAPI, File, HTTPException, UploadFile
     from fastapi.responses import Response
     """Lightweight FastAPI application for handling uploads and job management."""
     api = FastAPI(title="Nardini Backend", version="1.0.0")
@@ -726,57 +705,57 @@ def fastapi_app():
             zip_output_filename = sanitize_output_filename(output_filename)
         else:
             zip_output_filename = sanitize_output_filename(original_filename)
-        
+
         was_created = ensure_volume_directories()
         if was_created:
             vol.commit()
-        
+
         try:
             # Read and validate file content
             content = await file.read()
             if not content:
                 raise HTTPException(status_code=400, detail="File is empty.")
-            
+
             # MAX_FILE_SIZE is defined globally above
             if len(content) > MAX_FILE_SIZE:
                 raise HTTPException(
-                    status_code=413, 
+                    status_code=413,
                     detail=f"File is too large. Limit is {MAX_FILE_SIZE/(1024*1024)}MB."
                 )
 
             # Parse sequences using the reference code with a temporary file
             file_content = content.decode('utf-8')
-            
+
             # Create temporary file to use with read_sequences_from_filename
             with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".fasta") as temp_file:
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
-            
+
             logger.debug(f"Starting to parse sequences at {time.time()}")
             try:
                 parsed_sequences = read_sequences_from_filename(
                     temp_file_path,
-                    "sequence",  # default_name prefix  
+                    "sequence",  # default_name prefix
                     verbose=False
                 )
-                
+
                 if not parsed_sequences:
                     raise HTTPException(status_code=400, detail="No valid sequences found in FASTA file")
-                    
+
             finally:
                 # Clean up temporary file
                 if os.path.exists(temp_file_path):
                     os.unlink(temp_file_path)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to parse FASTA file: {e}")
-        
+
         # Create set of current sequence strings
         sequence_strings = {str(seq.seq) for seq in parsed_sequences}
         logger.info(f"Processing {len(sequence_strings)} unique sequences")
-        
+
         # Build sequence map from existing runs that match current sequences
         sequences_data = create_sequences_data(sequence_strings)
-        
+
         # Generate run_id and prepare sequence inputs
         run_id = str(uuid4())
         novel_sequences = []
@@ -793,8 +772,8 @@ def fastapi_app():
                 assert seq_data.get("status") == "cached"
 
         novel_sequences.sort(key=lambda x: len(str(x.seq)), reverse=True)
-        
-         
+
+
         job_ids = []
         if novel_sequences:
             logger.debug(f"First sequence length: {len(str(novel_sequences[0].seq))}")
@@ -858,7 +837,7 @@ def fastapi_app():
                     )
         else:
             logger.info("No novel sequences to process - all sequences are cached")
-        
+
         total_sequence_count = len(parsed_sequences)
         cached_sequence_count = total_sequence_count - len(novel_sequences)
         # Create .json metadata file for the run
@@ -878,16 +857,16 @@ def fastapi_app():
             assert run_metadata["status"] == "in_progress", "Run status must be in_progress"
             # ... add remaining validation here
         validate_run_metadata(run_metadata)
-        
+
         write_run_metadata_to_volume(run_id, run_metadata)
-        
-        
+
+
         logger.info(f"Submitted run {run_id}. {run_metadata['cached_sequences']}/{run_metadata['total_sequences']} sequences are cached")
 
         vol.commit()
         return {
             "run_id": run_id,
-            "status": "submitted", 
+            "status": "submitted",
             "message": "Job submitted for processing",
             "total_sequences": run_metadata["total_sequences"],
             "cached_sequences": run_metadata["cached_sequences"],
@@ -953,7 +932,7 @@ def fastapi_app():
                 zip_output_filename = sanitize_output_filename(output_filename)
             else:
                 zip_output_filename = run_metadata["output_filename"]
-            
+
             assert zip_output_filename.endswith(".zip"), "Output filename must end with .zip"
             merged_zip_path = get_zip_by_fasta_dir() / f"{run_id}.zip"
             # (1) Build the merged archive if it does not yet exist.
@@ -969,7 +948,7 @@ def fastapi_app():
                     )
                 completed_zip_paths = get_completed_zip_paths(sequences_data, require_all_complete=True)
                 merged_zip_path = Path(merge_zip_archives(completed_zip_paths, str(merged_zip_path)))
-                
+
                 run_metadata["merged_zip_filename"] = str(merged_zip_path)
                 run_metadata["completed_at"] = time.time()
                 run_metadata["status"] = "complete"
