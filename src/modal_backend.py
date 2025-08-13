@@ -11,7 +11,7 @@ Endpoints:
 - `/upload_fasta` — accepts a FASTA file, spawns jobs, and returns a run_id
 - `/status/{run_id}` — returns pending sequence IDs or completion state
 - `/download/{run_id}` — returns merged results zip when complete
-- `/retry/{run_id}` — re-checks cache and re-spawns work (stub)
+- `/retry/{run_id}` — re-checks cache and re-spawns work
 
 Deployment:
 ------------
@@ -26,15 +26,16 @@ curl -X POST "YOUR_MODAL_APP_URL/upload_fasta" \
 Volume layout and files written:
 --------------------------------
 - runs/{run_id}.json -> metadata for the run including:
-    - status, counts, timestamps (submitted_at, completed_at)
+    - status, timestamps (submitted_at, completed_at), other metadata
     - sequences: mapping of sequence_string -> {
-        sequence_id, status, start_time, end_time, seq_uuid, zip_path, job_id
+        sequence_id, seq_uuid, status, start_time, end_time, zip_path, job_id
       }
 - zipfiles/by_idr/{seq_uuid}.zip  -> per-sequence Nardini output
 - zipfiles/by_fasta/{run_id}.zip  -> merged archive of all per-sequence zips
 
 Key environment variables (with defaults):
 -----------------------------------------
+- APP_NAME=nardini_backend_dev
 - VOLUME_DIR=/data
 - VOLUME_NAME=nardini_volume_dev
 - TIMEOUT_SECONDS=10800
@@ -49,49 +50,15 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from uuid import uuid4
 
 import modal
-from typing_extensions import Literal, TypedDict
-
-SequenceString = str
-
+from typing_extensions import TypedDict
 
 class SequenceInput(TypedDict):
     sequence: Any  # Bio.SeqRecord object
     seq_uuid: str
-
-
-class ProgressData(TypedDict):
-    run_id: str
-    status: str
-    pending_sequences: List[str]
-
-
-class SequenceData(TypedDict):
-    sequence_id: str
-    status: Literal["pending", "cached", "pending_external", "complete"]
-    start_time: Optional[float]
-    end_time: Optional[float]
-    seq_uuid: Optional[str]
-    zip_path: Optional[str]
-    job_id: Optional[str]
-
-
-SequencesMapping = Dict[SequenceString, SequenceData]
-
-
-class RunData(TypedDict):
-    status: Literal["in_progress", "complete"]
-    fasta_filename: str
-    output_filename: str
-    sequences: SequencesMapping
-    total_sequences: int
-    cached_sequences: int
-    merged_zip_filename: Optional[str]
-    submitted_at: float
-    completed_at: Optional[float]
 
 
 # ---------------------- Environment configuration ---------------------- #
@@ -103,6 +70,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configurable parameters with env-variable overrides
+APP_NAME = os.getenv("APP_NAME", "nardini_backend_dev")
 VOLUME_DIR = Path(os.getenv("VOLUME_DIR", "/data"))
 VOLUME_NAME = os.getenv("VOLUME_NAME", "nardini_volume_dev")
 TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS", "10800"))  # default 3h
@@ -115,7 +83,7 @@ web_image = modal.Image.debian_slim().pip_install(
     "fastapi[standard]==0.115.13",
     "python-multipart==0.0.20",
     "biopython==1.84",
-)
+).add_local_python_source("schemas")
 
 # Heavy processing image for Nardini
 nardini_image = (
@@ -125,11 +93,14 @@ nardini_image = (
         "numpy==1.19.5",
     )
     .uv_pip_install("nardini==1.1.1")
-)
+).add_local_python_source("schemas")
 
 # Create a Modal application with shared volume
-app = modal.App("nardini_backend_dev")
+app = modal.App(APP_NAME)
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+
+with web_image.imports():
+    from schemas import RunData, SequencesMapping, SequenceData
 
 
 # ---------------------- Helper utilities (paths, IO, scans) ---------------------- #
@@ -230,7 +201,7 @@ def create_seqrecord(sequence_string: str, sequence_id: str):
     from Bio.Seq import Seq
     from Bio.SeqRecord import SeqRecord
 
-    return SeqRecord(Seq(sequence_string), id=sequence_id, description="")
+    return SeqRecord(Seq(sequence_string), id=sequence_id)
 
 
 # ------------------ New helper functions for sequence status handling ------------------ #
@@ -730,6 +701,7 @@ def process_16_sequences(sequence_inputs: List[SequenceInput]) -> None:
 def fastapi_app():
     from fastapi import FastAPI, File, HTTPException, UploadFile
     from fastapi.responses import Response
+    from schemas import HealthResponse, UploadFastaResponse, StatusResponse, RetryResponse
 
     """Lightweight FastAPI application for handling uploads and job management."""
     api = FastAPI(title="Nardini Backend", version="1.0.0")
@@ -737,8 +709,9 @@ def fastapi_app():
     @api.get("/health")
     async def health():
         """Health check endpoint."""
-        return {"status": "healthy", "service": "nardini-backend"}
+        return HealthResponse(status="healthy")
 
+    # TODO: Add more HTTPException handling and logging for errors
     @api.post("/upload_fasta", summary="Upload a FASTA file and spawn processing job")
     async def upload_fasta(
         file: UploadFile = File(...), output_filename: str = None
@@ -911,10 +884,11 @@ def fastapi_app():
             logger.info("No novel sequences to process - all sequences are cached")
 
         total_sequence_count = len(parsed_sequences)
-        cached_sequence_count = total_sequence_count - len(novel_sequences)
+        novel_sequence_count = len(novel_sequences)
+        cached_sequence_count = total_sequence_count - novel_sequence_count
         # Create .json metadata file for the run
         run_metadata = RunData(
-            status="in_progress",
+            status="pending",
             sequences=sequences_data,
             fasta_filename=original_filename,
             output_filename=zip_output_filename,
@@ -927,8 +901,8 @@ def fastapi_app():
 
         def validate_run_metadata(run_metadata: RunData) -> None:
             # TODO: validate JSON before writing to volume
-            assert run_metadata["status"] == "in_progress", (
-                "Run status must be in_progress"
+            assert run_metadata["status"] == "pending", (
+                "Run status must be pending"
             )
             # ... add remaining validation here
 
@@ -941,17 +915,16 @@ def fastapi_app():
         )
 
         vol.commit()
-        return {
-            "run_id": run_id,
-            "status": "submitted",
-            "message": "Job submitted for processing",
-            "total_sequences": run_metadata["total_sequences"],
-            "cached_sequences": run_metadata["cached_sequences"],
-            "job_ids": job_ids,
-        }
+        return UploadFastaResponse(
+            run_id=run_id,
+            status="submitted" if novel_sequences else "ready",
+            message=f"Successfully uploaded {original_filename} with {len(novel_sequences)}/{total_sequence_count} novel sequences.",
+            job_ids=job_ids,
+        )
 
+    # TODO: Add stale check for failed jobs (by excessive time or job_id data.)
     @api.get("/status/{run_id}", summary="Check job status")
-    async def check_status(run_id: str) -> ProgressData:
+    async def check_status(run_id: str) -> StatusResponse:
         """Check the status of a processing job."""
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
@@ -966,7 +939,7 @@ def fastapi_app():
 
             # If the run is already complete we can short-circuit the work below.
             if progress_data["status"] == "complete":
-                return ProgressData(
+                return StatusResponse(
                     run_id=run_id, status="complete", pending_sequences=[]
                 )
 
@@ -985,9 +958,9 @@ def fastapi_app():
                 # Persist intermediate progress and return an in-progress response.
                 write_run_metadata_to_volume(run_id, progress_data)
                 vol.commit()
-                return ProgressData(
+                return StatusResponse(
                     run_id=run_id,
-                    status="in_progress",
+                    status="pending",
                     pending_sequences=pending_sequence_ids,
                 )
 
@@ -998,7 +971,7 @@ def fastapi_app():
             )
             write_run_metadata_to_volume(run_id, progress_data)
             vol.commit()
-            return ProgressData(run_id=run_id, status="complete", pending_sequences=[])
+            return StatusResponse(run_id=run_id, status="complete", pending_sequences=[])
 
         except HTTPException:
             raise
@@ -1078,7 +1051,8 @@ def fastapi_app():
         """Retry processing for sequences that are still pending."""
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
-        retry_pending_sequences.spawn(run_id)
-        return {"run_id": run_id, "status": "retry_submitted"}
+        # retry_pending_sequences.spawn(run_id)
+        logger.info(type(RetryResponse))
+        return RetryResponse(run_id=run_id, status="retry_submitted")
 
     return api
