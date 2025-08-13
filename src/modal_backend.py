@@ -726,7 +726,7 @@ def process_16_sequences(sequence_inputs: List[SequenceInput]) -> None:
     # cpu=0.125,
     # memory=100,
 )
-@modal.asgi_app()
+@modal.asgi_app(requires_proxy_auth=True)
 def fastapi_app():
     from fastapi import FastAPI, File, HTTPException, UploadFile
     from fastapi.responses import Response
