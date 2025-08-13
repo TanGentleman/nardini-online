@@ -4,10 +4,11 @@ These mirror the structures used in `modal_backend.py`.
 """
 
 from typing import Dict, List, Optional
+
 from typing_extensions import Literal, TypedDict
 
-
 # ---- Public API response schemas ----
+
 
 class ErrorResponse(TypedDict):
     error: str
@@ -34,12 +35,14 @@ class RetryResponse(TypedDict):
     run_id: str
     status: Literal["retry_submitted"]
 
+
 class SimplifiedDownloadResponse(TypedDict):
     run_id: str
     destination_filepath: str
 
 
 # ---- Backend metadata schemas (stored in volume as JSON) ----
+
 
 class SequenceData(TypedDict):
     sequence_id: str
@@ -49,6 +52,7 @@ class SequenceData(TypedDict):
     seq_uuid: Optional[str]
     zip_path: Optional[str]
     job_id: Optional[str]
+
 
 SequenceString = str
 SequencesMapping = Dict[SequenceString, SequenceData]

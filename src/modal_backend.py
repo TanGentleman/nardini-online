@@ -56,6 +56,7 @@ from uuid import uuid4
 import modal
 from typing_extensions import TypedDict
 
+
 class SequenceInput(TypedDict):
     sequence: Any  # Bio.SeqRecord object
     seq_uuid: str
@@ -79,11 +80,15 @@ MAX_FILE_SIZE = MAX_UPLOAD_MB * 1024 * 1024  # bytes
 # ---------------------------------------------------------------------- #
 
 # Lightweight web image for FastAPI
-web_image = modal.Image.debian_slim().pip_install(
-    "fastapi[standard]==0.115.13",
-    "python-multipart==0.0.20",
-    "biopython==1.84",
-).add_local_python_source("schemas")
+web_image = (
+    modal.Image.debian_slim()
+    .pip_install(
+        "fastapi[standard]==0.115.13",
+        "python-multipart==0.0.20",
+        "biopython==1.84",
+    )
+    .add_local_python_source("schemas")
+)
 
 # Heavy processing image for Nardini
 nardini_image = (
@@ -100,7 +105,7 @@ app = modal.App(APP_NAME)
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 with web_image.imports():
-    from schemas import RunData, SequencesMapping, SequenceData
+    from schemas import RunData, SequenceData, SequencesMapping
 
 
 # ---------------------- Helper utilities (paths, IO, scans) ---------------------- #
@@ -701,7 +706,13 @@ def process_16_sequences(sequence_inputs: List[SequenceInput]) -> None:
 def fastapi_app():
     from fastapi import FastAPI, File, HTTPException, UploadFile
     from fastapi.responses import Response
-    from schemas import HealthResponse, UploadFastaResponse, StatusResponse, RetryResponse
+
+    from schemas import (
+        HealthResponse,
+        RetryResponse,
+        StatusResponse,
+        UploadFastaResponse,
+    )
 
     """Lightweight FastAPI application for handling uploads and job management."""
     api = FastAPI(title="Nardini Backend", version="1.0.0")
@@ -901,9 +912,7 @@ def fastapi_app():
 
         def validate_run_metadata(run_metadata: RunData) -> None:
             # TODO: validate JSON before writing to volume
-            assert run_metadata["status"] == "pending", (
-                "Run status must be pending"
-            )
+            assert run_metadata["status"] == "pending", "Run status must be pending"
             # ... add remaining validation here
 
         validate_run_metadata(run_metadata)
@@ -971,7 +980,9 @@ def fastapi_app():
             )
             write_run_metadata_to_volume(run_id, progress_data)
             vol.commit()
-            return StatusResponse(run_id=run_id, status="complete", pending_sequences=[])
+            return StatusResponse(
+                run_id=run_id, status="complete", pending_sequences=[]
+            )
 
         except HTTPException:
             raise
