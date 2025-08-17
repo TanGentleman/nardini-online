@@ -4,10 +4,6 @@
 
 RunFasta provides a simple, accessible interface for running **NARDINI** - a powerful tool for analyzing Intrinsically Disordered Regions (IDRs) in proteins. Built with Modal and FastAPI, it offers both a user-friendly Jupyter notebook interface and a REST API for programmatic access.
 
-## 🔬 What is NARDINI?
-
-NARDINI is a statistical analysis tool developed by Cohan et al. that uncovers non-random binary patterns within sequences of intrinsically disordered proteins. It conducts statistical analysis of **amino acid patterning** within IDRs, helping researchers understand protein structure and function.
-
 ## 🚀 Features
 
 ### ⚡ High Performance
@@ -27,24 +23,11 @@ NARDINI is a statistical analysis tool developed by Cohan et al. that uncovers n
 - **Merged Reports**: Combined results across all analyzed sequences
 - **Organized Output**: Structured file organization for easy access
 
-## 📁 Project Structure
-
-```
-RunFasta/
-├── src/
-│   └── modal_backend.py
-├── notebooks/
-│   └── demo.ipynb
-├── data/
-│   ├── fasta_inputs/
-│   └── zip_outputs/
-```
-
 ## 🚀 Getting Started
 
 **Ready to analyze your protein sequences?** 
 
-Simply open our **[Google Colab Notebook](https://github.com/TanGentleman/RunFasta/blob/main/notebooks/demo.ipynb)** - no installation required! The notebook provides a step-by-step walkthrough that will guide you through the entire process.
+Simply open our **[Google Colab Notebook](https://colab.research.google.com/drive/1jKDu1AfOHI-4BM1hHELIDFQCqbPz86M9)** - no installation required! The notebook provides a step-by-step walkthrough that will guide you through the entire process.
 
 *For detailed setup and deployment instructions, see our [Installation Guide](GUIDE.md).*
 
