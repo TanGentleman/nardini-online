@@ -21,6 +21,8 @@ from shared_utils.schemas import (
 # Set up logger
 logger = logging.getLogger(__name__)
 
+REQUIRE_AUTH = False
+
 
 def _get_auth_headers():
     load_dotenv()
@@ -34,7 +36,7 @@ def _get_auth_headers():
 # Test the health endpoint
 def test_health(url: str):
     """Test if the NARDINI backend service is healthy."""
-    headers = _get_auth_headers()
+    headers = _get_auth_headers() if REQUIRE_AUTH else None
     try:
         health_response = requests.get(f"{url}/health", headers=headers)
         if health_response.ok:
@@ -57,7 +59,7 @@ def upload_fasta(
     if not Path(fasta_filepath).exists():
         raise FileNotFoundError(f"File {fasta_filepath} does not exist")
 
-    headers = _get_auth_headers()
+    headers = _get_auth_headers() if REQUIRE_AUTH else None
     with open(fasta_filepath, "rb") as f:
         files = {"file": f}
         response = requests.post(f"{url}/upload_fasta", files=files, headers=headers)
@@ -75,7 +77,7 @@ def upload_fasta(
 
 def get_run_status(url: str, run_id: str):
     """Check the status of a NARDINI analysis run."""
-    headers = _get_auth_headers()
+    headers = _get_auth_headers() if REQUIRE_AUTH else None
     try:
         status_response = requests.get(f"{url}/status/{run_id}", headers=headers)
         if status_response.ok:
@@ -105,7 +107,7 @@ def download_zip(
             f"Destination directory {destination_dir} does not exist"
         )
 
-    headers = _get_auth_headers()
+    headers = _get_auth_headers() if REQUIRE_AUTH else None
     try:
         response = requests.get(
             f"{url}/download/{run_id}", stream=True, headers=headers
@@ -143,7 +145,7 @@ def retry_sequences(url: str, run_id: str):
     if not run_id:
         return ErrorResponse(error="Please provide a valid Run ID.")
 
-    headers = _get_auth_headers()
+    headers = _get_auth_headers() if REQUIRE_AUTH else None
     try:
         response = requests.get(f"{url}/retry/{run_id}", headers=headers)
         if response.ok:

@@ -159,13 +159,14 @@ def process_16_sequences(sequence_inputs: List[SequenceInput]) -> None:
     return None
 
 
+REQUIRE_AUTH = False
 @app.function(
     image=web_image,
     volumes={str(VOLUME_DIR): vol},
     # cpu=0.125,
     # memory=100,
 )
-@modal.asgi_app(requires_proxy_auth=True)
+@modal.asgi_app(requires_proxy_auth=REQUIRE_AUTH)
 def fastapi_app():
     from fastapi import FastAPI, File, HTTPException, UploadFile # type: ignore
     from fastapi.responses import Response # type: ignore
