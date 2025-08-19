@@ -1,8 +1,8 @@
-# RunFasta
+# Nardini Online
 
 🧬 **Blazing fast protein analysis**
 
-RunFasta provides a simple, accessible interface for running **NARDINI** - a powerful tool for analyzing Intrinsically Disordered Regions (IDRs) in proteins. Built with Modal and FastAPI, it offers both a user-friendly Jupyter notebook interface and a REST API for programmatic access.
+We provide a simple, accessible interface for running **NARDINI** - a powerful tool for analyzing Intrinsically Disordered Regions (IDRs) in proteins. Built with Modal and FastAPI, it offers both a user-friendly Jupyter notebook interface and a REST API for programmatic access.
 
 ## 🚀 Features
 
