@@ -12,7 +12,7 @@ JSON_PATH = DATA_DIR / "run_info.json"
 def get_backend_url(dev=False):
     deployed_url = os.getenv(
         "DEPLOYED_URL",
-        "https://tangentleman--run-fasta-fastapi-app.modal.run",
+        "https://tangentleman--nardini-online-fastapi-app.modal.run",
     )
     if dev:
         dev_url = deployed_url.replace(".modal.run", "-dev.modal.run")
