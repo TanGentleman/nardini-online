@@ -211,7 +211,7 @@ def fastapi_app():
         if output_filename:
             zip_output_filename = sanitize_output_filename(output_filename)
         else:
-            zip_output_filename = sanitize_output_filename(original_filename)
+            zip_output_filename = sanitize_output_filename(original_filename)[:-4] + "_results.zip"
 
         was_created = ensure_volume_directories()
         if was_created:
