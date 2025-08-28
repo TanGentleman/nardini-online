@@ -153,14 +153,61 @@ def read_sequences_from_filename(sequence_filename, default_name, verbose=False)
         raise RuntimeError(f'Sequence filename: "{sequence_filename}" not found.')
     return seqio_sequences
 
-def merge_zip_archives(zip_list: List[str], destination_filepath: str) -> str:
+def merge_zip_archives(zip_list: List[str], destination_filepath: str, sequences_data: SequencesMapping = None) -> str:
     """Merge multiple zip files into a single zip.
 
     - Copies all files from each input zip into the merged archive, resolving
       filename collisions by appending a suffix.
     - Concatenates all per-zip `sequences.tsv` into a `master_sequences.tsv` in
       the merged archive.
+    - If sequences_data is provided, replaces cached sequence IDs in filenames 
+      with the sequence IDs from the uploaded FASTA file.
     """
+    # helper function to build uuid -> sequence_id mapping
+    def build_uuid_to_sequence_id_mapping(zip_list: List[str], sequences_data: SequencesMapping) -> Dict[str, str]:
+        """Build mapping from seq_uuid to sequence_id for filename replacement."""
+        uuid_to_seq_id = {}
+        if not sequences_data:
+            print("No sequences_data provided, returning empty mapping")
+            return uuid_to_seq_id
+        
+        # Extract seq_uuid from zip file paths and map to sequence_id
+        for zip_path in zip_list:
+            # Extract uuid from filename like /path/to/12345678-1234-1234-1234-123456789012.zip
+            zip_filename = Path(zip_path).stem  # removes .zip extension
+            seq_uuid = zip_filename
+            
+            # Find the sequence_id for this uuid
+            for seq_data in sequences_data.values():
+                if seq_data["seq_uuid"] == seq_uuid or seq_data["zip_path"] == f"{get_zip_by_idr_dir()}/{seq_uuid}.zip":
+                    uuid_to_seq_id[seq_uuid] = seq_data["sequence_id"]
+                    break
+        
+        return uuid_to_seq_id
+
+    # helper function to replace sequence IDs in filenames
+    def replace_sequence_id_in_filename(filename: str, new_sequence_id: str) -> str:
+        """Replace sequence ID in filename while preserving the rest of the structure."""
+        valid_prefixes = [
+            "sequences.tsv",
+            "regular-",
+            "scrambled-",
+            "zscore-original-sequence-",
+            "zscore-scrambled-sequence-",
+        ]
+        print(f"Replacing sequence ID in filename: {filename} with {new_sequence_id}")
+        new_filename = None
+        for prefix in valid_prefixes:
+            if not filename.startswith(prefix):
+                continue
+            suffix = filename[-4:]
+            new_filename = f"{prefix}{new_sequence_id}{suffix}"
+            break
+        if not new_filename:
+            print(f"WARNING: File {filename} does not start with any valid prefixes")
+            return filename
+        return new_filename
+
     # helper fxn for mergeZips
     def add_to_master_sequences_tsv(master_tsv_path: str, tsv_content: str) -> None:
         """Append rows from a per-zip sequences.tsv into the master TSV, skipping headers."""
@@ -224,17 +271,31 @@ def merge_zip_archives(zip_list: List[str], destination_filepath: str) -> str:
         ]
         temp_tsv.write("\t".join(header) + "\n")
 
+    # Build mapping for sequence ID replacement if sequences_data is provided
+    uuid_to_seq_id = build_uuid_to_sequence_id_mapping(zip_list, sequences_data) if sequences_data else {}
+    
     try:
         with zipfile.ZipFile(destination_filepath, "w") as merged_zip:
             used_filenames = set()
 
             for zip_index, zip_path in enumerate(zip_list):
+                # Extract seq_uuid from zip path to get the new sequence_id
+                zip_uuid = Path(zip_path).stem
+                new_sequence_id = uuid_to_seq_id.get(zip_uuid) if uuid_to_seq_id else None
+                if not new_sequence_id:
+                    raise ValueError(f"No sequence ID found for zip {zip_path}")
+                
                 with zipfile.ZipFile(zip_path, "r") as zip_ref:
                     for file_info in zip_ref.infolist():
                         file_name = file_info.filename
                         if file_name != "sequences.tsv":
+                            # Replace sequence ID in filename if we have the mapping
+                            processed_filename = file_name
+                            processed_filename = replace_sequence_id_in_filename(
+                                file_name, new_sequence_id
+                            )
                             unique_filename = _get_unique_filename(
-                                file_name, used_filenames, zip_index
+                                processed_filename, used_filenames, zip_index
                             )
                             used_filenames.add(unique_filename)
                             with zip_ref.open(file_info) as source_file:
