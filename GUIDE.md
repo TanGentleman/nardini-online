@@ -1,199 +1,452 @@
-# RunFasta – Comprehensive Guide
+# Nardini Online - Technical Guide
 
-## 1  What is RunFasta?
+This guide provides comprehensive technical documentation for deploying, configuring, and using the Nardini Online API.
 
-RunFasta is a cloud-backed, **blazing-fast interface for running the NARDINI statistical analysis** on Intrinsically Disordered Regions (IDRs) in proteins.  It offers two ways to drive the analysis:
+## Table of Contents
 
-1. **Interactive notebook** – Zero-install, guided workflow (ideal for researchers).
-2. **REST API** – Upload a FASTA file, poll for completion, download a results ZIP (ideal for programmatic pipelines).
+- [Architecture Overview](#architecture-overview)
+- [Installation & Deployment](#installation--deployment)
+- [API Reference](#api-reference)
+- [Configuration](#configuration)
+- [Development Setup](#development-setup)
+- [Troubleshooting](#troubleshooting)
 
-All heavy computation is executed remotely on [Modal](https://modal.com) using a scalable worker image; the local machine therefore only needs to send/receive files.
+## Architecture Overview
 
----
+Nardini Online is built on **Modal**, a serverless computing platform, providing scalable protein sequence analysis using the NARDINI tool for Intrinsically Disordered Regions (IDRs).
 
-## 2  Quick Start (Notebook – Recommended)
+### Core Components
 
-1. **Open the notebook**  
-   Either in local Jupyter _or_ directly on Google Colab:
-   ```bash
-   https://github.com/TanGentleman/RunFasta/blob/main/notebooks/demo.ipynb
-   ```
+- **FastAPI Web Service**: Handles file uploads, job management, and result downloads
+- **Distributed Processing**: Sequences processed in parallel using Modal's serverless functions
+- **Persistent Storage**: Modal Volume for caching results and storing metadata
+- **Batch Processing**: Optimized batching (16 sequences per worker) for efficient resource usage
 
-2. **Install prerequisites**  (only needed locally – Colab already has them):
-   ```bash
-   pip install requests ipykernel
-   ```
+### Processing Flow
 
-3. **Place your FASTA file** in one of:
-   * `notebooks/` (same dir as notebook)
-   * `data/fasta_inputs/`
-   * a custom path you provide inside the notebook
+1. **Upload**: FASTA file uploaded via REST API
+2. **Parsing**: Sequences extracted and validated
+3. **Caching**: Check existing results to avoid reprocessing
+4. **Processing**: Novel sequences submitted for parallel analysis
+5. **Storage**: Results cached as individual zip files
+6. **Merging**: Final results merged into single downloadable archive
 
-4. **Run cells top-to-bottom**.  The notebook will:
-   * sanity-check the backend health endpoint
-   * let you pick a `.fasta` / `.fa` / `.fas` file
-   * POST it to the `/upload_fasta` endpoint
-   * expose a **Run ID** & persist run info
-   * poll `/status/{run_id}` until finished
-   * download `/download/{run_id}` into `data/zip_outputs/`
+## Installation & Deployment
 
-5. **Inspect results** – each ZIP contains:
-   * `*.tsv` files – z-scores & statistics
-   * `*.png` plots – visualisations
-   * `master_sequences.tsv` – merged summary across all sequences in the upload
+### Prerequisites
 
----
+- Python 3.9+
+- Modal account and CLI setup
+- Required dependencies (see `requirements.txt`)
 
-## 3  Deploying the Backend on Modal
+### Environment Variables
 
-> Skip this section if you only intend to **use** the public instance at  
-> `https://tangentleman--nardini-backend-fastapi-app.modal.run`.
-
-### 4.1  Prerequisites
-
-* Modal account + billing set-up (free tier works fine)
-* Modal CLI ≥ 0.54 ( `pip install modal` )
-* Python 3.9 – 3.11
-
-### 4.2  Steps
+Configure these environment variables for customization:
 
 ```bash
-# 1. Authenticate (generates ~/.modal
-modal token new
-
-# 2. (Optional) set your own Modal volume name in src/modal_backend.py
-#    by editing: vol = modal.Volume.from_name("nardini_volume", create_if_missing=True)
-
-# 3. Deploy – this builds two container images:
-#    • web_image     (FastAPI + upload logic)
-#    • nardini_image (heavy worker with NARDINI + NumPy)
-cd src
-modal deploy modal_backend.py
-
-# 4. Grab the URL printed by Modal → something like
-#    https://<username>--nardini-backend-fastapi-app.modal.run
+APP_NAME=nardini_online           # Modal app name
+VOLUME_NAME=run_fasta_volume      # Modal volume name
+TIMEOUT_SECONDS=21600             # Processing timeout (6 hours default)
+MAX_UPLOAD_MB=10                  # Maximum file upload size
 ```
 
-> **Tip:**  During development you can run `modal serve modal_backend.py` which hot-reloads code changes locally.
+### Deployment Steps
 
-### 4.3  Updating
-Simply re-run `modal deploy src/modal_backend.py` after editing the code.  The CLI uses caching so pushes are incremental.
+1. **Install Modal CLI**:
+   ```bash
+   pip install modal
+   modal setup
+   ```
 
----
+2. **Clone Repository**:
+   ```bash
+   git clone <repository-url>
+   cd nardini-online
+   ```
 
-## 4  REST API Reference
+3. **Deploy to Modal**:
+   ```bash
+   modal deploy src/app/backend.py
+   ```
 
-| Method & Path              | Purpose                                    | Body / Params                                                    |
-|----------------------------|--------------------------------------------|------------------------------------------------------------------|
-| `GET /health`              | Liveness probe                             | –                                                                |
-| `POST /upload_fasta`       | Submit a FASTA file for analysis           | **form-data** `file=@your.fasta`  (≤ 10 MB by default)            |
-| `GET /status/{run_id}`     | Poll progress                              | –  Returns JSON with per-sequence fields + `_status`             |
-| `GET /download/{run_id}`   | Fetch merged results ZIP (once completed)  | –  Returns `application/zip` attachment                           |
+4. **Get API URL**:
+   After deployment, Modal provides the FastAPI endpoint URL.
 
-### Example – cURL
-```bash
-# Upload a FASTA file
-curl -X POST "${BACKEND_URL}/upload_fasta" \
-     -F "file=@Halophile-pHtolerant-yeast-first16.fasta"
+## API Reference
 
-# → { "run_id": "<uuid>", ... }
+Base URL: `https://your-app-name--fastapi-app.modal.run`
 
-# Check status
-curl "${BACKEND_URL}/status/<uuid>"
+### Endpoints
 
-# Download when ready
-curl -L "${BACKEND_URL}/download/<uuid>" -o results.zip
+#### Health Check
+```http
+GET /health
 ```
 
-### Example – Python Snippet
+**Response**:
+```json
+{
+  "status": "healthy"
+}
+```
+
+#### Upload FASTA File
+```http
+POST /upload_fasta
+Content-Type: multipart/form-data
+```
+
+**Parameters**:
+- `file` (required): FASTA file (.fasta, .fa, .fas)
+- `output_filename` (optional): Custom output filename
+
+**Response**:
+```json
+{
+  "run_id": "uuid-string",
+  "status": "submitted|ready",
+  "message": "Success message",
+  "job_ids": ["job1", "job2", "..."]
+}
+```
+
+**Status Values**:
+- `submitted`: Novel sequences are being processed
+- `ready`: All sequences were cached (no processing needed)
+
+#### Check Job Status
+```http
+GET /status/{run_id}
+```
+
+**Response**:
+```json
+{
+  "run_id": "uuid-string",
+  "status": "pending|complete",
+  "pending_sequences": ["seq_id1", "seq_id2"]
+}
+```
+
+#### Download Results
+```http
+GET /download/{run_id}?output_filename=custom_name.zip
+```
+
+**Parameters**:
+- `output_filename` (optional): Override the default output filename
+
+**Response**: ZIP file containing:
+- Individual TSV files with statistical analysis
+- PNG visualization files
+- Merged summary data
+
+#### Retry Failed Sequences
+```http
+GET /retry/{run_id}
+```
+
+**Response**:
+```json
+{
+  "run_id": "uuid-string",
+  "status": "retry_submitted"
+}
+```
+
+### Error Responses
+
+All endpoints return error responses in this format:
+
+```json
+{
+  "detail": "Error message description"
+}
+```
+
+Common HTTP status codes:
+- `400`: Bad request (invalid file, missing parameters)
+- `404`: Run not found
+- `413`: File too large
+- `500`: Internal server error
+
+## Configuration
+
+### File Size Limits
+
+- Maximum upload: 10MB (configurable via `MAX_UPLOAD_MB`)
+- Supported formats: `.fasta`, `.fa`, `.fas`
+
+### Processing Limits
+
+- Timeout: 6 hours per job (configurable via `TIMEOUT_SECONDS`)
+- Batch size: 16 sequences per worker (optimized for performance)
+- Concurrent workers: Unlimited (Modal's auto-scaling)
+
+### Caching Behavior
+
+- Results cached by sequence string hash
+- Duplicate sequences across runs reuse cached results
+- Cache persists across deployments (stored in Modal Volume)
+
+## Development Setup
+
+### Local Development
+
+1. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Run Local Tests**:
+   ```bash
+   modal run src/app/backend.py::test_function
+   ```
+
+3. **Debug Mode**:
+   Set `REQUIRE_AUTH = True` in `backend.py` for authentication during development.
+
+### Project Structure
+
+```
+src/
+├── app/
+│   ├── backend.py          # Main FastAPI application
+│   └── common.py           # Shared Modal configuration
+├── shared_utils/
+│   ├── schemas.py          # TypedDict definitions
+│   ├── file_utils.py       # File system operations
+│   └── utils.py            # Utility functions
+├── backend_utils/
+│   └── utils.py            # Processing logic
+└── fastapi_utils/
+    └── utils.py            # API helper functions
+```
+
+### Key Functions
+
+- `process_single_sequence()`: Processes individual sequences
+- `process_16_sequences()`: Batch processing for efficiency  
+- `retry_pending_sequences()`: Handles failed job recovery
+- `migrate_run_metadata()`: Updates metadata format
+
+## Troubleshooting
+
+### Common Issues
+
+#### 1. "Run not found" Error
+- Verify the `run_id` is correct
+- Check if the run metadata exists in the Modal Volume
+
+#### 2. Processing Stuck in "Pending"
+- Use `/retry/{run_id}` endpoint to restart failed jobs
+- Check Modal dashboard for worker errors
+- Verify sequence format is valid
+
+#### 3. Download Fails
+- Ensure all sequences are complete before downloading
+- Check `/status/{run_id}` first to verify completion
+- Verify sufficient storage space in Modal Volume
+
+#### 4. Upload Rejected
+- Check file size (max 10MB default)
+- Verify file extension (.fasta, .fa, .fas)
+- Ensure file contains valid FASTA sequences
+
+### Monitoring
+
+#### Modal Dashboard
+- Monitor function invocations and errors
+- View logs for debugging
+- Check volume usage and costs
+
+#### Logging
+- All operations logged with structured messages
+- Error details captured for troubleshooting
+- Performance metrics tracked
+
+### Performance Optimization
+
+#### Batch Size Tuning
+- Default 16 sequences per worker optimized for most use cases
+- Adjust `BATCH_SIZE` in code for specific workloads
+- Consider sequence length distribution
+
+#### Caching Strategy
+- Sequences cached by exact string match
+- Consider sequence normalization for better hit rates
+- Monitor cache hit/miss ratios
+
+## Security Considerations
+
+- Files validated for FASTA format before processing
+- No sensitive data logged or exposed
+- Rate limiting available through Modal's infrastructure
+- Optional authentication via `REQUIRE_AUTH` flag
+
+## Example Usage
+
+### Python Client Example
+
 ```python
-import requests, time
-url = "https://<your>.modal.run"
+import requests
+import time
 
-# 1. Upload
-with open("sample.fasta", "rb") as f:
-    r = requests.post(f"{url}/upload_fasta", files={"file": f})
-    run_id = r.json()["run_id"]
+# API base URL (replace with your actual deployment URL)
+BASE_URL = "https://your-app-name--fastapi-app.modal.run"
 
-# 2. Poll
-while True:
-    status = requests.get(f"{url}/status/{run_id}").json()["status"]
-    if status == "completed":
-        break
-    time.sleep(10)
+def process_fasta_file(fasta_file_path, output_filename=None):
+    """Complete workflow example for processing a FASTA file."""
+    
+    # 1. Health check
+    response = requests.get(f"{BASE_URL}/health")
+    print(f"API Status: {response.json()['status']}")
+    
+    # 2. Upload FASTA file
+    with open(fasta_file_path, 'rb') as f:
+        files = {'file': f}
+        params = {}
+        if output_filename:
+            params['output_filename'] = output_filename
+            
+        response = requests.post(f"{BASE_URL}/upload_fasta", files=files, params=params)
+    
+    if response.status_code != 200:
+        print(f"Upload failed: {response.json()}")
+        return None
+        
+    upload_result = response.json()
+    run_id = upload_result['run_id']
+    print(f"Upload successful. Run ID: {run_id}")
+    print(f"Status: {upload_result['status']}")
+    
+    # 3. Poll for completion
+    while True:
+        response = requests.get(f"{BASE_URL}/status/{run_id}")
+        status_result = response.json()
+        
+        if status_result['status'] == 'complete':
+            print("Processing complete!")
+            break
+        elif status_result['status'] == 'pending':
+            pending_count = len(status_result['pending_sequences'])
+            print(f"Still processing {pending_count} sequences...")
+            time.sleep(10)  # Wait 10 seconds before checking again
+        
+    # 4. Download results
+    response = requests.get(f"{BASE_URL}/download/{run_id}")
+    if response.status_code == 200:
+        output_file = output_filename or f"results_{run_id}.zip"
+        with open(output_file, 'wb') as f:
+            f.write(response.content)
+        print(f"Results downloaded to: {output_file}")
+        return output_file
+    else:
+        print(f"Download failed: {response.status_code}")
+        return None
 
-# 3. Download
-zip_bytes = requests.get(f"{url}/download/{run_id}").content
-open("results.zip", "wb").write(zip_bytes)
+# Usage
+if __name__ == "__main__":
+    result_file = process_fasta_file("my_sequences.fasta", "my_results.zip")
+    if result_file:
+        print(f"Processing complete! Results saved to {result_file}")
 ```
 
----
+### cURL Examples
 
-## 5  How It Works (Under the Hood)
-
-```
-┌──────────┐  POST /upload_fasta          ┌────────────┐   fork workers    ┌──────────┐
-│  Client  │─────────────────────────────▶│  FastAPI    │──────────────────▶│ Process  │
-└──────────┘                              │  (web_image)│17×parallel seq.   │  Pool    │
-    ▲                                     └─────┬──────┘                   └────┬─────┘
-    │   GET /status/{run_id}                    │   spawn process_nardini_job     │
-    │   GET /download/{run_id}                  ▼                                │
-┌──────────┐                              ┌────────────┐   NARDINI / NumPy   │
-│  Browser │◀─────────────────────────────│ process_*  │─────────────────────┘
-└──────────┘                              └────────────┘
+#### Upload FASTA File
+```bash
+curl -X POST "https://your-app-name--fastapi-app.modal.run/upload_fasta" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@sequences.fasta" \
+  -F "output_filename=my_results.zip"
 ```
 
-1. **FastAPI layer** (`fastapi_app`) lives in a lightweight container (`web_image`) and simply enqueues work.
-2. **Heavy worker** (`process_nardini_job`) lives in `nardini_image` (Python 3.9 + NARDINI + NumPy).
-3. Worker parses the FASTA, skips sequences already cached in a **Modal Volume** (`/data`).
-4. Novel sequences are executed in parallel via a `ProcessPoolExecutor` (default 16 cores).
-5. Each sequence run produces its own `nardini-data-*.zip`; once all finish they are merged (`mergeZips`) into one archive per FASTA upload.
-6. Progress is checkpointed to `<run_id>_in_progress.json` inside the volume for real-time status polling.
+#### Check Status
+```bash
+curl "https://your-app-name--fastapi-app.modal.run/status/your-run-id-here"
+```
+
+#### Download Results
+```bash
+curl -O "https://your-app-name--fastapi-app.modal.run/download/your-run-id-here?output_filename=results.zip"
+```
+
+### JavaScript/Node.js Example
+
+```javascript
+const axios = require('axios');
+const fs = require('fs');
+const FormData = require('form-data');
+
+const BASE_URL = 'https://your-app-name--fastapi-app.modal.run';
+
+async function processFasta(fastaFilePath, outputFilename) {
+    try {
+        // 1. Upload file
+        const form = new FormData();
+        form.append('file', fs.createReadStream(fastaFilePath));
+        if (outputFilename) {
+            form.append('output_filename', outputFilename);
+        }
+        
+        const uploadResponse = await axios.post(`${BASE_URL}/upload_fasta`, form, {
+            headers: form.getHeaders()
+        });
+        
+        const runId = uploadResponse.data.run_id;
+        console.log(`Upload successful. Run ID: ${runId}`);
+        
+        // 2. Poll for completion
+        while (true) {
+            const statusResponse = await axios.get(`${BASE_URL}/status/${runId}`);
+            
+            if (statusResponse.data.status === 'complete') {
+                console.log('Processing complete!');
+                break;
+            }
+            
+            console.log(`Still processing ${statusResponse.data.pending_sequences.length} sequences...`);
+            await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+        }
+        
+        // 3. Download results
+        const downloadResponse = await axios.get(`${BASE_URL}/download/${runId}`, {
+            responseType: 'stream'
+        });
+        
+        const outputPath = outputFilename || `results_${runId}.zip`;
+        const writer = fs.createWriteStream(outputPath);
+        downloadResponse.data.pipe(writer);
+        
+        return new Promise((resolve, reject) => {
+            writer.on('finish', () => {
+                console.log(`Results downloaded to: ${outputPath}`);
+                resolve(outputPath);
+            });
+            writer.on('error', reject);
+        });
+        
+    } catch (error) {
+        console.error('Error:', error.response?.data || error.message);
+        throw error;
+    }
+}
+
+// Usage (best if sequences already cached)
+processFasta('sequences.fasta', 'my_results.zip')
+    .then(outputPath => console.log(`Processing complete! Results: ${outputPath}`))
+    .catch(error => console.error('Failed:', error));
+```
+
+## Support
+
+For issues or questions:
+
+1. Check the [troubleshooting section](#troubleshooting)
+2. Review Modal platform documentation
+3. Contact the development team
 
 ---
 
-## 6  Configuration & Customisation
-
-| Setting | Location | Default | Description |
-|---------|----------|---------|-------------|
-| **MAX_FILE_SIZE** | `fastapi_app.upload_fasta` | 10 MB | Hard cap on upload size |
-| **NUM_SCRAMBLED_SEQUENCES** | NARDINI constant | 100k (see library) | Controls statistical rigour |
-| **ProcessPool max_workers** | `process_nardini_job` | 16 | Increase for larger Modal CPUs |
-| **Volume name** | `modal_backend.py` line 54 | `nardini_volume` | Rename if sharing projects |
-
-> **Changing Nardini parameters** – edit the `TYPEALL`, `NUM_SCRAMBLED_SEQUENCES`, etc. import section and redeploy.
-
----
-
-## 7  Caching Strategy
-
-* **Sequence-level cache** – each unique amino-acid string gets its own ZIP.  Hash → ZIP mapping is stored as JSON files in `/data/seq_zip_maps/` on the Modal volume.
-* **Fasta-level cache** – merged ZIPs live under `/data/zipfiles/by_fasta/` keyed by `run_id`.
-* Re-uploading a FASTA with mixtures of cached/novel sequences only recomputes the new ones, dramatically saving time.
-
----
-
-## 8  Troubleshooting
-
-| Symptom | Probable Cause | Fix |
-|---------|----------------|-----|
-| `413 Payload Too Large` on upload | File > 10 MB | Split FASTA or raise `MAX_FILE_SIZE` constant & redeploy |
-| `/status` returns `failed` | Nardini internal error (rare invalid sequence) | Check `error` field in JSON  → remove problematic sequence |
-
----
-
-## 9  Optimizing the Engine (Parallelism & Performance)
-
-RunFasta already parallelises per-sequence calculations using a Python
-`ProcessPoolExecutor`.  Here are some levers you can tune to squeeze
-the most performance out of your Modal deployment:
-
-1. **Number of workers (`max_workers`)**  
-   `process_nardini_job` currently runs with `max_workers=16`.  
-   • This means a queue is constructed with a .fasta file with over 16 sequences.
-   • This can be optimized by using other techniques for batching. See (https://modal.com/docs/guide/scale)
-
----
-
-
-
+**Built with ❤️ by Tanuj Vasudeva and Ethan Caine, 2025**
