@@ -2,7 +2,7 @@
 
 🧬 **Blazing fast protein analysis**
 
-We provide a simple, accessible interface for running **NARDINI** - a powerful tool for analyzing Intrinsically Disordered Regions (IDRs) in proteins. Built with Modal and FastAPI, it offers both a user-friendly Jupyter notebook interface and a REST API for programmatic access.
+We provide a simple, accessible interface for running **NARDINI** - a powerful tool for analyzing Intrinsically Disordered Regions (IDRs) in proteins. You can use our API for programmatic access, or our Google COLAB notebook for ease of use.
 
 ## 🚀 Features
 
@@ -31,7 +31,7 @@ Simply open our **[Google Colab Notebook](https://colab.research.google.com/driv
 
 *For detailed setup and deployment instructions, see our [Installation Guide](GUIDE.md).*
 
-## 📖 How to Use RunFasta
+## 📖 How to Use Nardini Online
 
 ### 📔 Interactive Notebook (Recommended for Lab Members)
 
@@ -47,7 +47,7 @@ The notebook is designed to be beginner-friendly with clear explanations at each
 
 ### 🔧 For Advanced Users
 
-If you prefer working with APIs or integrating RunFasta into your own tools, we also provide a REST API interface. See our [Technical Documentation](GUIDE.md) for detailed API information.
+If you prefer working with APIs or integrating Nardini Online into your own tools, we also provide a REST API interface. See our [Technical Documentation](GUIDE.md) for detailed API information.
 
 ## 📊 Simple Workflow
 
