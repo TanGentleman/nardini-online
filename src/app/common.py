@@ -1,7 +1,7 @@
 import os
 import modal
 # Configurable parameters with env-variable overrides
-APP_NAME = os.getenv("APP_NAME", "run_fasta")
+APP_NAME = os.getenv("APP_NAME", "nardini_online")
 VOLUME_NAME = os.getenv("VOLUME_NAME", "run_fasta_volume")
 TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS", "21600"))  # default 6h
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))

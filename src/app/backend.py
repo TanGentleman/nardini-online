@@ -211,7 +211,7 @@ def fastapi_app():
         if output_filename:
             zip_output_filename = sanitize_output_filename(output_filename)
         else:
-            zip_output_filename = sanitize_output_filename(original_filename)
+            zip_output_filename = sanitize_output_filename(original_filename)[:-4] + "_results.zip"
 
         was_created = ensure_volume_directories()
         if was_created:
@@ -276,6 +276,8 @@ def fastapi_app():
         for sequence in parsed_sequences:
             seq_str = str(sequence.seq)
             seq_data = sequences_data[seq_str]
+            # Replace sequence_id with the sequence.id
+            seq_data["sequence_id"] = sequence.id
             if seq_data.get("status") == "pending":
                 novel_sequences.append(sequence)
             else:
@@ -497,7 +499,7 @@ def fastapi_app():
                     sequences_data, require_all_complete=True
                 )
                 merged_zip_path = Path(
-                    merge_zip_archives(completed_zip_paths, str(merged_zip_path))
+                    merge_zip_archives(completed_zip_paths, str(merged_zip_path), sequences_data)
                 )
 
                 run_metadata["merged_zip_filename"] = str(merged_zip_path)
