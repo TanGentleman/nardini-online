@@ -35,9 +35,21 @@ Nardini Online is built on **Modal**, a serverless computing platform, providing
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - Modal account and CLI setup
-- Required dependencies (see `requirements.txt`)
+- Required dependencies (see `pyproject.toml`)
+
+### Dependencies
+
+From `pyproject.toml`:
+```toml
+dependencies = [
+    "ipykernel>=6.30.1",
+    "modal>=1.1.1", 
+    "python-dotenv>=1.1.1",
+    "requests>=2.32.4",
+]
+```
 
 ### Environment Variables
 
@@ -48,6 +60,11 @@ APP_NAME=nardini_online           # Modal app name
 VOLUME_NAME=run_fasta_volume      # Modal volume name
 TIMEOUT_SECONDS=21600             # Processing timeout (6 hours default)
 MAX_UPLOAD_MB=10                  # Maximum file upload size
+
+# For authenticated endpoints (optional)
+MODAL_TOKEN_ID=your_token_id      # Modal authentication
+MODAL_TOKEN_SECRET=your_secret    # Modal authentication
+DEPLOYED_URL=your_custom_url      # Override default deployment URL
 ```
 
 ### Deployment Steps
@@ -189,13 +206,38 @@ Common HTTP status codes:
 - Duplicate sequences across runs reuse cached results
 - Cache persists across deployments (stored in Modal Volume)
 
+### Volume Structure
+
+The Modal Volume (`/data`) is organized as follows:
+
+```
+/data/
+├── runs/                    # Run metadata (JSON files)
+│   ├── {run_id}.json       # Per-run metadata and status
+│   └── ...
+├── zipfiles/
+│   ├── by_idr/             # Individual sequence results
+│   │   ├── {seq_uuid}.zip  # Per-sequence analysis results
+│   │   └── ...
+│   └── by_fasta/           # Merged run results  
+│       ├── {run_id}.zip    # Complete run results
+│       └── ...
+```
+
+Each sequence result zip contains:
+- `.tsv` files with statistical analysis
+- `.png` visualization files
+- Organized by sequence ID
+
 ## Development Setup
 
 ### Local Development
 
 1. **Install Dependencies**:
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
+   # or for development with linting
+   pip install -e ".[dev]"
    ```
 
 2. **Run Local Tests**:
@@ -203,8 +245,19 @@ Common HTTP status codes:
    modal run src/app/backend.py::test_function
    ```
 
-3. **Debug Mode**:
-   Set `REQUIRE_AUTH = True` in `backend.py` for authentication during development.
+3. **Development vs Production URLs**:
+   - Production: `https://app-name--fastapi-app.modal.run`
+   - Development: `https://app-name--fastapi-app-dev.modal.run`
+   - Configure via `DEPLOYED_URL` environment variable
+
+4. **Authentication Modes**:
+   - Set `REQUIRE_AUTH = False` for public access (production default)
+   - Set `REQUIRE_AUTH = True` for authenticated access (requires Modal tokens)
+
+5. **Deploy to Development**:
+   ```bash
+   modal deploy --name your-app-dev src/app/backend.py
+   ```
 
 ### Project Structure
 
@@ -283,6 +336,26 @@ src/
 - No sensitive data logged or exposed
 - Rate limiting available through Modal's infrastructure
 - Optional authentication via `REQUIRE_AUTH` flag
+
+### Cost and Resource Management
+
+#### Modal Pricing Factors
+- **Compute costs**: Charges per vCPU-second and GB-memory-second
+- **Storage costs**: Modal Volume storage charges
+- **Network costs**: Data transfer charges
+
+#### Cost Optimization Tips
+- **Batch processing**: 16 sequences per worker reduces overhead
+- **Aggressive caching**: Duplicate sequences reuse existing results
+- **Configurable timeouts**: Prevent runaway jobs (6h default)
+- **Auto-scaling**: Workers scale down when idle (`scaledown_window=10`)
+
+#### Resource Monitoring
+- Use Modal dashboard to monitor:
+  - Function invocation costs
+  - Volume storage usage
+  - Network transfer volumes
+  - Failed job cleanup
 
 ## Example Usage
 
@@ -369,7 +442,7 @@ curl "https://your-app-name--fastapi-app.modal.run/status/your-run-id-here"
 
 #### Download Results
 ```bash
-curl -O "https://your-app-name--fastapi-app.modal.run/download/your-run-id-here?output_filename=results.zip"
+curl -o "results.zip" "https://your-app-name--fastapi-app.modal.run/download/your-run-id-here"
 ```
 
 ### JavaScript/Node.js Example
