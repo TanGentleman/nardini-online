@@ -1,5 +1,3 @@
-# ONLY include: read_sequences_from_filename, create_sequences_data, get_completed_zip_paths, merge_zip_archives
-
 import json
 import logging
 import os
@@ -10,7 +8,8 @@ from typing import Any, Dict, List
 from uuid import uuid4
 
 from shared_utils.schemas import SequencesMapping, SequenceData
-from shared_utils.file_utils import get_zip_by_idr_dir, get_zip_by_fasta_dir, get_runs_dir, get_run_metadata
+from shared_utils.file_utils import clean_filename, get_zip_by_idr_dir, get_zip_by_fasta_dir, get_runs_dir, get_run_metadata, save_fasta_to_volume
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +88,6 @@ def get_completed_zip_paths(
 # ------------------------------------------------------------------------------- #
 
 
-# The following functions are copied from nardini.utils.py
 # NOTE: See https://github.com/mshinn23/nardini/blob/main/nardini/utils.py
 def read_sequences_from_filename(sequence_filename, default_name, verbose=False):
     """This is a helper function to read in sequences from a sequence FASTA file.
@@ -347,4 +345,9 @@ def sanitize_output_filename(filename: str) -> str:
         filename = filename[:-suffix_len]
     if not filename.endswith(".zip"):
         filename = filename + ".zip"
-    return filename
+    return clean_filename(filename)
+
+def replace_idr_ranges(content: str) -> str:
+    """Replace IDR range format from '[n, m]' to '[n-m]' in FASTA headers."""
+    formatted_content = re.sub(r'\[(\d+),\s*(\d+)\]', r'[\1-\2]', content)
+    return formatted_content
