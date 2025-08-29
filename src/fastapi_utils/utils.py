@@ -1,17 +1,24 @@
 import json
 import logging
 import os
+import re
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict, List
 from uuid import uuid4
 
-from shared_utils.schemas import SequencesMapping, SequenceData
-from shared_utils.file_utils import clean_filename, get_zip_by_idr_dir, get_zip_by_fasta_dir, get_runs_dir, get_run_metadata, save_fasta_to_volume
-import re
+from shared_utils.file_utils import (
+    clean_filename,
+    get_run_metadata,
+    get_runs_dir,
+    get_zip_by_fasta_dir,
+    get_zip_by_idr_dir,
+)
+from shared_utils.schemas import SequenceData, SequencesMapping
 
 logger = logging.getLogger(__name__)
+
 
 def create_sequences_data(sequence_strings: set[str]) -> SequencesMapping:
     """Build a mapping of sequence string -> metadata by scanning prior runs.
@@ -65,6 +72,7 @@ def create_sequences_data(sequence_strings: set[str]) -> SequencesMapping:
         )
     return sequences_data
 
+
 def get_completed_zip_paths(
     sequences_data: SequencesMapping, require_all_complete: bool = False
 ) -> List[str]:
@@ -108,8 +116,9 @@ def read_sequences_from_filename(sequence_filename, default_name, verbose=False)
     @returns seqio_sequences:       A list of sequence strings that were
                                     extracted from the sequence file.
     """
-    from Bio import SeqIO
     from io import StringIO
+
+    from Bio import SeqIO
 
     seqio_sequences = list()
     if sequence_filename is None:
@@ -130,10 +139,13 @@ def read_sequences_from_filename(sequence_filename, default_name, verbose=False)
                 raw_sequences = [
                     s.strip() for s in content.split() if len(s.strip()) > 0
                 ]
+
                 # seqio_sequences = read_sequences_from_string_list(
                 #     raw_sequences, default_name
                 # )
-                def read_sequences_from_string_list(list_of_sequences, default_name, verbose=False):
+                def read_sequences_from_string_list(
+                    list_of_sequences, default_name, verbose=False
+                ):
                     sequences = list()
                     # This means that we have to create a fake record using the sequence content.
                     for index, sequence in enumerate(list_of_sequences, start=1):
@@ -142,8 +154,14 @@ def read_sequences_from_filename(sequence_filename, default_name, verbose=False)
                         sequences.append(fake_record)
 
                     if verbose:
-                        print("Number of sequences read: {num}".format(num=len(sequences)), end="\n\n")
+                        print(
+                            "Number of sequences read: {num}".format(
+                                num=len(sequences)
+                            ),
+                            end="\n\n",
+                        )
                     return sequences
+
                 seqio_sequences = read_sequences_from_string_list(
                     raw_sequences, default_name
                 )
@@ -151,36 +169,47 @@ def read_sequences_from_filename(sequence_filename, default_name, verbose=False)
         raise RuntimeError(f'Sequence filename: "{sequence_filename}" not found.')
     return seqio_sequences
 
-def merge_zip_archives(zip_list: List[str], destination_filepath: str, sequences_data: SequencesMapping = None) -> str:
+
+def merge_zip_archives(
+    zip_list: List[str],
+    destination_filepath: str,
+    sequences_data: SequencesMapping = None,
+) -> str:
     """Merge multiple zip files into a single zip.
 
     - Copies all files from each input zip into the merged archive, resolving
       filename collisions by appending a suffix.
     - Concatenates all per-zip `sequences.tsv` into a `master_sequences.tsv` in
       the merged archive.
-    - If sequences_data is provided, replaces cached sequence IDs in filenames 
+    - If sequences_data is provided, replaces cached sequence IDs in filenames
       with the sequence IDs from the uploaded FASTA file.
     """
+
     # helper function to build uuid -> sequence_id mapping
-    def build_uuid_to_sequence_id_mapping(zip_list: List[str], sequences_data: SequencesMapping) -> Dict[str, str]:
+    def build_uuid_to_sequence_id_mapping(
+        zip_list: List[str], sequences_data: SequencesMapping
+    ) -> Dict[str, str]:
         """Build mapping from seq_uuid to sequence_id for filename replacement."""
         uuid_to_seq_id = {}
         if not sequences_data:
             print("No sequences_data provided, returning empty mapping")
             return uuid_to_seq_id
-        
+
         # Extract seq_uuid from zip file paths and map to sequence_id
         for zip_path in zip_list:
             # Extract uuid from filename like /path/to/12345678-1234-1234-1234-123456789012.zip
             zip_filename = Path(zip_path).stem  # removes .zip extension
             seq_uuid = zip_filename
-            
+
             # Find the sequence_id for this uuid
             for seq_data in sequences_data.values():
-                if seq_data["seq_uuid"] == seq_uuid or seq_data["zip_path"] == f"{get_zip_by_idr_dir()}/{seq_uuid}.zip":
+                if (
+                    seq_data["seq_uuid"] == seq_uuid
+                    or seq_data["zip_path"] == f"{get_zip_by_idr_dir()}/{seq_uuid}.zip"
+                ):
                     uuid_to_seq_id[seq_uuid] = seq_data["sequence_id"]
                     break
-        
+
         return uuid_to_seq_id
 
     # helper function to replace sequence IDs in filenames
@@ -220,7 +249,6 @@ def merge_zip_archives(zip_list: List[str], destination_filepath: str, sequences
             if columns and columns[0] != "ID":
                 with open(master_tsv_path, "a") as f:
                     f.write("\t".join(columns) + "\n")
-
 
     def _get_unique_filename(original_filename, used_filenames, zip_index):
         """Generate a unique filename by adding a suffix if the original is already used"""
@@ -270,8 +298,12 @@ def merge_zip_archives(zip_list: List[str], destination_filepath: str, sequences
         temp_tsv.write("\t".join(header) + "\n")
 
     # Build mapping for sequence ID replacement if sequences_data is provided
-    uuid_to_seq_id = build_uuid_to_sequence_id_mapping(zip_list, sequences_data) if sequences_data else {}
-    
+    uuid_to_seq_id = (
+        build_uuid_to_sequence_id_mapping(zip_list, sequences_data)
+        if sequences_data
+        else {}
+    )
+
     try:
         with zipfile.ZipFile(destination_filepath, "w") as merged_zip:
             used_filenames = set()
@@ -279,10 +311,12 @@ def merge_zip_archives(zip_list: List[str], destination_filepath: str, sequences
             for zip_index, zip_path in enumerate(zip_list):
                 # Extract seq_uuid from zip path to get the new sequence_id
                 zip_uuid = Path(zip_path).stem
-                new_sequence_id = uuid_to_seq_id.get(zip_uuid) if uuid_to_seq_id else None
+                new_sequence_id = (
+                    uuid_to_seq_id.get(zip_uuid) if uuid_to_seq_id else None
+                )
                 if not new_sequence_id:
                     raise ValueError(f"No sequence ID found for zip {zip_path}")
-                
+
                 with zipfile.ZipFile(zip_path, "r") as zip_ref:
                     for file_info in zip_ref.infolist():
                         file_name = file_info.filename
@@ -347,7 +381,8 @@ def sanitize_output_filename(filename: str) -> str:
         filename = filename + ".zip"
     return clean_filename(filename)
 
+
 def replace_idr_ranges(content: str) -> str:
     """Replace IDR range format from '[n, m]' to '[n-m]' in FASTA headers."""
-    formatted_content = re.sub(r'\[(\d+),\s*(\d+)\]', r'[\1-\2]', content)
+    formatted_content = re.sub(r"\[(\d+),\s*(\d+)\]", r"[\1-\2]", content)
     return formatted_content

@@ -2,10 +2,11 @@
 # Import required packages for NARDINI analysis
 
 import datetime
+import json
 import logging
 import os
 from pathlib import Path
-import json
+
 import requests
 from dotenv import load_dotenv
 
@@ -160,7 +161,9 @@ def retry_sequences(url: str, run_id: str):
 
 
 # TODO: Move this to a JSON file on client-side, or associate runs with users in Modal Volume
-def save_run_info(run_id: str, fasta_filename: str, output_filepath: Path | str | None = None):
+def save_run_info(
+    run_id: str, fasta_filename: str, output_filepath: Path | str | None = None
+):
     """Save run information to a JSON file for reference."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     output_filepath = Path(output_filepath)
@@ -173,13 +176,14 @@ def save_run_info(run_id: str, fasta_filename: str, output_filepath: Path | str 
         "title": "NARDINI Analysis Run Information",
         "timestamp": timestamp,
         "fasta_file": fasta_filename,
-        "run_id": run_id
+        "run_id": run_id,
     }
 
     with open(output_filepath, "w") as f:
         json.dump(run_info, f, indent=2)
 
     return str(output_filepath)
+
 
 def get_available_runs(json_path: Path | str):
     """Get all available runs from the JSON file."""

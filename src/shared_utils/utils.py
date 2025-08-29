@@ -1,7 +1,8 @@
 # ONLY include: get_pending_uuids, find_completed_in_cache, update_sequences_with_completed, sanitize_output_filename
 from typing import Dict, List
-from shared_utils.schemas import SequencesMapping
+
 from shared_utils.file_utils import get_zip_by_idr_dir
+from shared_utils.schemas import SequencesMapping
 
 # ------------------ New helper functions for sequence status handling ------------------ #
 
@@ -48,6 +49,7 @@ def update_sequences_with_completed(
         elif seq_data["status"] in ("pending", "pending_external"):
             pending_sequence_ids.append(seq_data["sequence_id"])
     return pending_sequence_ids
+
 
 def sanitize_output_filename(filename: str) -> str:
     if not filename:

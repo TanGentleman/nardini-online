@@ -534,11 +534,13 @@ def fastapi_app():
     async def upload_fasta(file: UploadFile = File(...)) -> dict:
         """Validates the FASTA file, spawns processing job, and returns the run_id."""
         # Validate file type
-        if not file.filename or not file.filename.lower().endswith((
-            ".fasta",
-            ".fa",
-            ".fas",
-        )):
+        if not file.filename or not file.filename.lower().endswith(
+            (
+                ".fasta",
+                ".fa",
+                ".fas",
+            )
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="Invalid file type. Please upload a FASTA file (.fasta, .fa, .fas).",

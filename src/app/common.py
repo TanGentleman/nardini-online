@@ -1,5 +1,7 @@
 import os
+
 import modal
+
 # Configurable parameters with env-variable overrides
 APP_NAME = os.getenv("APP_NAME", "nardini_online")
 VOLUME_NAME = os.getenv("VOLUME_NAME", "run_fasta_volume")

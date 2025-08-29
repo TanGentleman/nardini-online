@@ -1,19 +1,42 @@
+import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import List
 from uuid import uuid4
-import logging
-import time
+
 import modal
 
-from app.common import app, nardini_image, web_image, vol, MAX_FILE_SIZE, TIMEOUT_SECONDS
+from app.common import (
+    MAX_FILE_SIZE,
+    TIMEOUT_SECONDS,
+    app,
+    nardini_image,
+    vol,
+    web_image,
+)
+from shared_utils.file_utils import (
+    ensure_volume_directories,
+    get_run_json_path,
+    get_run_metadata,
+    get_runs_dir,
+    get_volume_dir,
+    get_zip_by_fasta_dir,
+    write_run_metadata_to_volume,
+)
 from shared_utils.schemas import SequenceInput
-from shared_utils.file_utils import get_volume_dir, write_run_metadata_to_volume, get_run_json_path, get_run_metadata, get_zip_by_fasta_dir, ensure_volume_directories, get_zip_by_idr_dir, get_runs_dir
-from shared_utils.utils import get_pending_uuids, find_completed_in_cache, update_sequences_with_completed, sanitize_output_filename
+from shared_utils.utils import (
+    find_completed_in_cache,
+    get_pending_uuids,
+    sanitize_output_filename,
+    update_sequences_with_completed,
+)
+
 logger = logging.getLogger(__name__)
 
 VOLUME_DIR = get_volume_dir()
+
 
 @app.function(
     image=nardini_image,
@@ -24,7 +47,8 @@ VOLUME_DIR = get_volume_dir()
 def retry_pending_sequences(run_id: str):
     """Retry processing for sequences that are still pending."""
     from backend_utils.utils import create_seqrecord
-    from shared_utils.schemas import RunData, SequenceData
+    from shared_utils.schemas import SequenceData
+
     progress_data = get_run_metadata(run_id)
 
     if progress_data.get("status") == "complete":
@@ -109,6 +133,7 @@ def process_single_sequence(
     moved to the modal volume in `zipfiles/by_idr/{seq_uuid}.zip`.
     """
     from backend_utils.utils import _process_one_sequence_to_volume
+
     try:
         output_path = _process_one_sequence_to_volume(sequence_input)
         sequence = sequence_input["sequence"]
@@ -120,6 +145,7 @@ def process_single_sequence(
         seq_id = getattr(sequence, "id", "<unknown>")
         logger.error(f"Error processing sequence {seq_id}: {e}")
     return None
+
 
 @app.function(
     image=nardini_image,
@@ -133,8 +159,9 @@ def process_16_sequences(sequence_inputs: List[SequenceInput]) -> None:
     Each sequence is executed in its own temporary directory to avoid file clashes.
     The produced zip archives are moved to the modal volume in `zipfiles/by_idr/{seq_uuid}.zip`.
     """
-    from backend_utils.utils import _process_one_sequence_to_volume
     from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from backend_utils.utils import _process_one_sequence_to_volume
 
     if not sequence_inputs:
         return None
@@ -160,6 +187,8 @@ def process_16_sequences(sequence_inputs: List[SequenceInput]) -> None:
 
 
 REQUIRE_AUTH = False
+
+
 @app.function(
     image=web_image,
     volumes={str(VOLUME_DIR): vol},
@@ -168,19 +197,24 @@ REQUIRE_AUTH = False
 )
 @modal.asgi_app(requires_proxy_auth=REQUIRE_AUTH)
 def fastapi_app():
-    from fastapi import FastAPI, File, HTTPException, UploadFile # type: ignore
-    from fastapi.responses import Response # type: ignore
+    from fastapi import FastAPI, File, HTTPException, UploadFile  # type: ignore
+    from fastapi.responses import Response  # type: ignore
 
+    from fastapi_utils.utils import (
+        create_sequences_data,
+        get_completed_zip_paths,
+        merge_zip_archives,
+        read_sequences_from_filename,
+        replace_idr_ranges,
+    )
     from shared_utils.schemas import (
         HealthResponse,
         RetryResponse,
+        RunData,
+        SequenceData,
         StatusResponse,
         UploadFastaResponse,
-        RunData,
-        SequenceData
     )
-
-    from fastapi_utils.utils import read_sequences_from_filename, create_sequences_data, get_completed_zip_paths, merge_zip_archives, replace_idr_ranges
 
     """Lightweight FastAPI application for handling uploads and job management."""
     api = FastAPI(title="Nardini Backend", version="1.0.0")
@@ -199,11 +233,13 @@ def fastapi_app():
         # Validate file type
         logger.debug(f"Uploading file: {file.filename} at {time.time()}")
         original_filename = file.filename
-        if not original_filename or not original_filename.lower().endswith((
-            ".fasta",
-            ".fa",
-            ".fas",
-        )):
+        if not original_filename or not original_filename.lower().endswith(
+            (
+                ".fasta",
+                ".fa",
+                ".fas",
+            )
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="Invalid file type. Please upload a FASTA file (.fasta, .fa, .fas).",
@@ -211,7 +247,9 @@ def fastapi_app():
         if output_filename:
             zip_output_filename = sanitize_output_filename(output_filename)
         else:
-            zip_output_filename = sanitize_output_filename(original_filename)[:-4] + "_results.zip"
+            zip_output_filename = (
+                sanitize_output_filename(original_filename)[:-4] + "_results.zip"
+            )
 
         was_created = ensure_volume_directories()
         if was_created:
@@ -500,7 +538,9 @@ def fastapi_app():
                     sequences_data, require_all_complete=True
                 )
                 merged_zip_path = Path(
-                    merge_zip_archives(completed_zip_paths, str(merged_zip_path), sequences_data)
+                    merge_zip_archives(
+                        completed_zip_paths, str(merged_zip_path), sequences_data
+                    )
                 )
 
                 run_metadata["merged_zip_filename"] = str(merged_zip_path)
