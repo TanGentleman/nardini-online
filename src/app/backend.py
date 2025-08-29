@@ -24,6 +24,7 @@ from shared_utils.file_utils import (
     get_volume_dir,
     get_zip_by_fasta_dir,
     write_run_metadata_to_volume,
+    save_fasta_to_volume,
 )
 from shared_utils.schemas import SequenceInput
 from shared_utils.utils import (
