@@ -180,7 +180,7 @@ def fastapi_app():
         SequenceData
     )
 
-    from fastapi_utils.utils import read_sequences_from_filename, create_sequences_data, get_completed_zip_paths, merge_zip_archives
+    from fastapi_utils.utils import read_sequences_from_filename, create_sequences_data, get_completed_zip_paths, merge_zip_archives, replace_idr_ranges
 
     """Lightweight FastAPI application for handling uploads and job management."""
     api = FastAPI(title="Nardini Backend", version="1.0.0")
@@ -232,6 +232,7 @@ def fastapi_app():
 
             # Parse sequences using the reference code with a temporary file
             file_content = content.decode("utf-8")
+            file_content = replace_idr_ranges(file_content)
 
             # Create temporary file to use with read_sequences_from_filename
             with tempfile.NamedTemporaryFile(
