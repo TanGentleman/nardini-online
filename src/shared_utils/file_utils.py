@@ -1,5 +1,5 @@
-import logging
 import json
+import logging
 from pathlib import Path
 
 from shared_utils.schemas import RunData
@@ -53,6 +53,14 @@ def write_run_metadata_to_volume(run_id: str, data: RunData) -> None:
     path = get_run_json_path(run_id)
     write_json(path, data)
 
+def save_fasta_to_volume(content: str, filename: str, run_id: str) -> None:
+    path = get_fasta_dir() / clean_filename(run_id) / clean_filename(filename)
+    if not path.parent.exists():
+        logging.info(f"Saving fasta to folder {path.parent}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        f.write(content)
+
 def ensure_volume_directories() -> bool:
     """Ensure the required directories exist in the mounted volume."""
     was_created = False
@@ -64,10 +72,3 @@ def ensure_volume_directories() -> bool:
     return was_created
 
 
-def save_fasta_to_volume(content: str, filename: str, run_id: str) -> None:
-    path = get_fasta_dir() / clean_filename(run_id) / clean_filename(filename)
-    if not path.parent.exists():
-        logging.info(f"Saving fasta to folder {path.parent}")
-        path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        f.write(content)

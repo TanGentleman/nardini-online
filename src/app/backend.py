@@ -389,8 +389,8 @@ def fastapi_app():
             # ... add remaining validation here
 
         validate_run_metadata(run_metadata)
-
         write_run_metadata_to_volume(run_id, run_metadata)
+        save_fasta_to_volume(file_content, original_filename, run_id)
 
         logger.info(
             f"Submitted run {run_id}. {run_metadata['cached_sequences']}/{run_metadata['total_sequences']} sequences are cached"
