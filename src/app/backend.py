@@ -271,7 +271,11 @@ def fastapi_app():
 
             # Parse sequences using the reference code with a temporary file
             file_content = content.decode("utf-8")
-            file_content = replace_idr_ranges(file_content)
+
+            # OPTIONAL: Replace IDR ranges in the FASTA file
+            REPLACE_IDR_RANGES = False
+            if REPLACE_IDR_RANGES:
+                file_content = replace_idr_ranges(file_content)
 
             # Create temporary file to use with read_sequences_from_filename
             with tempfile.NamedTemporaryFile(
