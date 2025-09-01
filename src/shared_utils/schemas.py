@@ -43,9 +43,11 @@ class SimplifiedDownloadResponse(TypedDict):
 
 # ---- Backend metadata schemas (stored in volume as JSON) ----
 
+
 class SequenceInput(TypedDict):
     sequence: Any  # Bio.SeqRecord object
     seq_uuid: str
+
 
 class SequenceData(TypedDict):
     sequence_id: str

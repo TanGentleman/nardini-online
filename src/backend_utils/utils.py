@@ -5,8 +5,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from shared_utils.schemas import SequenceInput
 from shared_utils.file_utils import get_zip_by_idr_dir
+from shared_utils.schemas import SequenceInput
 
 
 def _process_one_sequence_to_volume(sequence_input: SequenceInput) -> str:
@@ -15,13 +15,13 @@ def _process_one_sequence_to_volume(sequence_input: SequenceInput) -> str:
     Returns absolute path to the written zip in `zipfiles/by_idr`.
     Raises on error.
     """
-    from nardini.constants import ( # type: ignore
+    from nardini.constants import (  # type: ignore
         DEFAULT_RANDOM_SEED,
         NUM_SCRAMBLED_SEQUENCES,
         TYPEALL,
     )
-    from nardini.score_and_plot import calculate_zscore_and_plot # type: ignore
-    from nardini.utils import set_random_seed # type: ignore
+    from nardini.score_and_plot import calculate_zscore_and_plot  # type: ignore
+    from nardini.utils import set_random_seed  # type: ignore
 
     sequence = sequence_input["sequence"]
     seq_uuid = sequence_input["seq_uuid"]
