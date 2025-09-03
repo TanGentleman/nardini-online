@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 REQUIRE_AUTH = False
 
 
+def sanitize_path(user_path: str, base_dir: Path) -> Path:
+    """Sanitize user path to prevent traversal."""
+    safe_path = Path(user_path).resolve()
+    if not safe_path.is_relative_to(base_dir):
+        raise ValueError("Path traversal detected")
+    return safe_path
+
+
 def _get_auth_headers():
     load_dotenv()
     token_id = os.getenv("MODAL_TOKEN_ID")
@@ -57,11 +65,12 @@ def upload_fasta(
     url: str, fasta_filepath: Path | str
 ) -> UploadFastaResponse | ErrorResponse:
     """Submit a FASTA file for NARDINI analysis."""
-    if not Path(fasta_filepath).exists():
-        raise FileNotFoundError(f"File {fasta_filepath} does not exist")
+    safe_path = sanitize_path(str(fasta_filepath), Path.cwd())
+    if not safe_path.exists():
+        raise FileNotFoundError(f"File {safe_path} does not exist")
 
     headers = _get_auth_headers() if REQUIRE_AUTH else None
-    with open(fasta_filepath, "rb") as f:
+    with open(safe_path, "rb") as f:
         files = {"file": f}
         response = requests.post(f"{url}/upload_fasta", files=files, headers=headers)
     if response.ok:
@@ -102,11 +111,9 @@ def download_zip(
     if not run_id:
         return ErrorResponse(error="Please provide a valid Run ID.")
 
-    destination_dir = Path(destination_dir)
-    if not destination_dir.exists():
-        raise FileNotFoundError(
-            f"Destination directory {destination_dir} does not exist"
-        )
+    safe_dest = sanitize_path(str(destination_dir), Path.cwd())
+    if not safe_dest.exists():
+        raise FileNotFoundError(f"Destination directory {safe_dest} does not exist")
 
     headers = _get_auth_headers() if REQUIRE_AUTH else None
     try:
@@ -118,9 +125,9 @@ def download_zip(
             content_disposition = response.headers.get("content-disposition", "")
             if "filename=" in content_disposition:
                 filename = content_disposition.split("filename=")[1].strip('"')
-                destination_filepath = destination_dir / filename
+                destination_filepath = safe_dest / filename
             else:
-                destination_filepath = destination_dir / f"{run_id}.zip"
+                destination_filepath = safe_dest / f"{run_id}.zip"
 
             with open(destination_filepath, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
@@ -166,10 +173,10 @@ def save_run_info(
 ):
     """Save run information to a JSON file for reference."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    output_filepath = Path(output_filepath)
-    if not output_filepath.parent.exists():
+    safe_output = sanitize_path(str(output_filepath), Path.cwd())
+    if not safe_output.parent.exists():
         raise FileNotFoundError(
-            f"Destination directory {output_filepath.parent} does not exist"
+            f"Destination directory {safe_output.parent} does not exist"
         )
 
     run_info = {
@@ -179,15 +186,16 @@ def save_run_info(
         "run_id": run_id,
     }
 
-    with open(output_filepath, "w") as f:
+    with open(safe_output, "w") as f:
         json.dump(run_info, f, indent=2)
 
-    return str(output_filepath)
+    return str(safe_output)
 
 
 def get_available_runs(json_path: Path | str):
     """Get all available runs from the JSON file."""
-    if not Path(json_path).exists():
+    safe_json = sanitize_path(str(json_path), Path.cwd())
+    if not safe_json.exists():
         return []
-    with open(json_path, "r") as f:
+    with open(safe_json, "r") as f:
         return json.load(f)
