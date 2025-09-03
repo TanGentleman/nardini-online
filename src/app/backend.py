@@ -4,6 +4,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import List
+import uuid
 from uuid import uuid4
 
 import modal
@@ -455,6 +456,11 @@ def fastapi_app():
             raise HTTPException(status_code=400, detail="Run ID is required")
 
         try:
+            uuid.UUID(run_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid run_id format")
+
+        try:
             json_path = get_run_json_path(run_id)
             if not json_path.exists():
                 raise HTTPException(status_code=404, detail="Run not found")
@@ -513,6 +519,11 @@ def fastapi_app():
         """Download the results zip file."""
         if not run_id:
             raise HTTPException(status_code=400, detail="Run ID is required")
+
+        try:
+            uuid.UUID(run_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid run_id format")
 
         try:
             merged_zip_path = None
