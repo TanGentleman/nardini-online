@@ -192,6 +192,7 @@ def save_run_info(
     return str(safe_output)
 
 
+
 def get_available_runs(json_path: Path | str):
     """Get all available runs from the JSON file."""
     safe_json = sanitize_path(str(json_path), Path.cwd())
