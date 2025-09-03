@@ -1,4 +1,5 @@
 # ONLY include: get_pending_uuids, find_completed_in_cache, update_sequences_with_completed, sanitize_output_filename
+from pathlib import Path
 from typing import Dict, List
 
 from shared_utils.file_utils import get_zip_by_idr_dir
@@ -56,6 +57,8 @@ def sanitize_output_filename(filename: str) -> str:
         raise ValueError("Filename is required")
     if len(filename) > 250:
         filename = filename[:250]
+    # Prevent path traversal
+    filename = Path(filename).name  # Strip directories
     # Remove any potential .fasta extension
     suffix = filename.split(".")[-1]
     if suffix in ["fasta", "fa", "fas"]:
