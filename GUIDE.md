@@ -281,7 +281,6 @@ src/
 - `process_single_sequence()`: Processes individual sequences
 - `process_16_sequences()`: Batch processing for efficiency  
 - `retry_pending_sequences()`: Handles failed job recovery
-- `migrate_run_metadata()`: Updates metadata format
 
 ## Troubleshooting
 

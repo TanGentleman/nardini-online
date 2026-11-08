@@ -21,7 +21,6 @@ from shared_utils.file_utils import (
     ensure_volume_directories,
     get_run_json_path,
     get_run_metadata,
-    get_runs_dir,
     get_volume_dir,
     get_zip_by_fasta_dir,
     save_fasta_to_volume,
@@ -94,25 +93,6 @@ def retry_pending_sequences(run_id: str):
                 job_id=call.object_id,
             )
     logger.info(f"Spawned {len(job_ids)} jobs. Ids: {job_ids}")
-    return
-
-
-@app.function(
-    image=nardini_image,
-    volumes={str(VOLUME_DIR): vol},
-)
-def migrate_run_metadata() -> None:
-    """Modify the run metadata all JSON files."""
-    for json_file in get_runs_dir().glob("*.json"):
-        run_metadata = get_run_metadata(json_file.stem)
-        run_metadata["output_filename"] = sanitize_output_filename(
-            run_metadata["output_filename"]
-        )
-        logger.info(
-            f"Modifying run metadata for {json_file.stem} to {run_metadata['output_filename']}"
-        )
-        write_run_metadata_to_volume(json_file.stem, run_metadata)
-    vol.commit()
     return
 
 
@@ -207,7 +187,6 @@ def fastapi_app():
         get_completed_zip_paths,
         merge_zip_archives,
         read_sequences_from_filename,
-        replace_idr_ranges,
     )
     from shared_utils.schemas import (
         HealthResponse,
@@ -273,11 +252,6 @@ def fastapi_app():
             # Parse sequences using the reference code with a temporary file
             file_content = content.decode("utf-8")
 
-            # OPTIONAL: Replace IDR ranges in the FASTA file
-            REPLACE_IDR_RANGES = False
-            if REPLACE_IDR_RANGES:
-                file_content = replace_idr_ranges(file_content)
-
             # Create temporary file to use with read_sequences_from_filename
             with tempfile.NamedTemporaryFile(
                 mode="w", delete=False, suffix=".fasta"
@@ -342,50 +316,15 @@ def fastapi_app():
             logger.info(f"Spawning {len(novel_sequences)} sequences in batches of 16")
             logger.debug(f"Starting to spawn at {time.time()}")
 
-            USE_BATCH_PROCESSING = True
             BATCH_SIZE = 16
-            if USE_BATCH_PROCESSING:
 
-                def chunked(seq_list, size):
-                    for i in range(0, len(seq_list), size):
-                        yield seq_list[i : i + size]
+            def chunked(seq_list, size):
+                for i in range(0, len(seq_list), size):
+                    yield seq_list[i : i + size]
 
-                for batch in chunked(novel_sequences, BATCH_SIZE):
-                    batch_inputs: List[SequenceInput] = []
-                    for seq in batch:
-                        seq_str = str(seq.seq)
-                        seq_data = sequences_data[seq_str]
-                        assert seq_data.get("status") == "pending", (
-                            f"Sequence {seq.id} is not pending"
-                        )
-                        assert seq_data.get("seq_uuid"), (
-                            f"Sequence {seq.id} has no seq_uuid"
-                        )
-                        seq_uuid = seq_data.get("seq_uuid")
-                        batch_inputs.append(
-                            SequenceInput(sequence=seq, seq_uuid=seq_uuid)
-                        )
-
-                    logger.info(f"Spawning batch of {len(batch_inputs)} sequences")
-                    call = process_16_sequences.spawn(batch_inputs)
-                    job_ids.append(call.object_id)
-
-                    # Update sequences map with job details for each sequence in the batch
-                    for seq in batch:
-                        seq_str = str(seq.seq)
-                        seq_uuid = sequences_data[seq_str]["seq_uuid"]
-                        sequences_data[seq_str] = SequenceData(
-                            start_time=time.time(),
-                            end_time=None,
-                            seq_uuid=seq_uuid,
-                            sequence_id=seq.id,
-                            status="pending",
-                            zip_path=None,
-                            job_id=call.object_id,
-                        )
-            else:
-                # Spawn single sequence jobs
-                for seq in novel_sequences:
+            for batch in chunked(novel_sequences, BATCH_SIZE):
+                batch_inputs: List[SequenceInput] = []
+                for seq in batch:
                     seq_str = str(seq.seq)
                     seq_data = sequences_data[seq_str]
                     assert seq_data.get("status") == "pending", (
@@ -395,10 +334,16 @@ def fastapi_app():
                         f"Sequence {seq.id} has no seq_uuid"
                     )
                     seq_uuid = seq_data.get("seq_uuid")
-                    call = process_single_sequence.spawn(
-                        SequenceInput(sequence=seq, seq_uuid=seq_uuid)
-                    )
-                    job_ids.append(call.object_id)
+                    batch_inputs.append(SequenceInput(sequence=seq, seq_uuid=seq_uuid))
+
+                logger.info(f"Spawning batch of {len(batch_inputs)} sequences")
+                call = process_16_sequences.spawn(batch_inputs)
+                job_ids.append(call.object_id)
+
+                # Update sequences map with job details for each sequence in the batch
+                for seq in batch:
+                    seq_str = str(seq.seq)
+                    seq_uuid = sequences_data[seq_str]["seq_uuid"]
                     sequences_data[seq_str] = SequenceData(
                         start_time=time.time(),
                         end_time=None,
