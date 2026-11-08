@@ -47,7 +47,7 @@ always off, duplicate helpers in `fastapi_utils`.
 - `nardini-online-1` (done): import, uv + lockfile, offline tests (API
   contract with a fake worker), CI, plain README, GUIDE deploy fix, Jupyter
   status fix.
-- `nardini-online-2` (planned): cut the noise above.
+- `nardini-online-2` (done): cut the noise above (about 1,300 lines).
 - `nardini-online-3` (planned): real NARDINI worker test on Python 3.9.
 - `nardini-online-4` (planned): fix the bugs above (changes error codes and
   `/retry` behavior).
