@@ -53,7 +53,8 @@ always off, duplicate helpers in `fastapi_utils`.
 - `nardini-online-3` (done): real NARDINI worker test on Python 3.9, own CI job.
 - `nardini-online-4` (done): 413 for oversize uploads, 404 for unknown runs
   on `/download`, uploaded ids in `master_sequences.tsv`.
-- `nardini-online-5` (planned): make `/retry` respawn pending sequences.
+- `nardini-online-5` (done): make `/retry` respawn pending sequences; 400/404
+  for bad or unknown run ids instead of a blind `retry_submitted`.
 - `nardini-online-6` (planned): issue #11, next-step URLs in responses
   (new fields only).
 

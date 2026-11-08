@@ -15,7 +15,7 @@ from conftest import write_nardini_zip
 from fastapi.testclient import TestClient
 
 import app.backend as backend
-from shared_utils.file_utils import get_zip_by_idr_dir
+from shared_utils.file_utils import get_run_metadata, get_zip_by_idr_dir
 
 FASTA = (
     ">Drs1_IDR_1_[0-10]\nMVVGTKKYSN\n"
@@ -26,6 +26,9 @@ FASTA = (
 
 class FakeVolume:
     def commit(self):
+        pass
+
+    def reload(self):
         pass
 
 
@@ -179,10 +182,54 @@ def test_bad_run_ids(client):
     assert client.get(f"/download/{uuid.uuid4()}").status_code == 404
 
 
-def test_retry_acknowledges(client):
-    # Current behavior: /retry only acknowledges; it does not respawn jobs.
-    run_id = str(uuid.uuid4())
+class FakeSingleWorker:
+    def __init__(self):
+        self.inputs = []
+
+    def spawn(self, sequence_input):
+        self.inputs.append(sequence_input)
+        return FakeCall(f"retry-{len(self.inputs)}")
+
+
+def test_retry_spawns_the_retry_function(client, monkeypatch):
+    retry = FakeSingleWorker()
+    monkeypatch.setattr(backend, "retry_pending_sequences", retry)
+    run_id = upload(client).json()["run_id"]
+
     assert client.get(f"/retry/{run_id}").json() == {
         "run_id": run_id,
         "status": "retry_submitted",
     }
+    assert retry.inputs == [run_id]
+    assert client.get("/retry/not-a-uuid").status_code == 400
+    assert client.get(f"/retry/{uuid.uuid4()}").status_code == 404
+    assert retry.inputs == [run_id]
+
+
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_retry_respawns_only_unfinished_sequences(client, worker, monkeypatch):
+    single = FakeSingleWorker()
+    monkeypatch.setattr(backend, "process_single_sequence", single)
+    run_id = upload(client).json()["run_id"]
+    done = worker.batches[0][0]
+    write_nardini_zip(
+        get_zip_by_idr_dir() / f"{done['seq_uuid']}.zip",
+        done["sequence"].id,
+        str(done["sequence"].seq),
+    )
+
+    job_ids = backend.retry_pending_sequences.local(run_id)
+
+    assert sorted(job_ids) == ["fc-retry-1", "fc-retry-2"]
+    retried = {str(si["sequence"].seq): si for si in single.inputs}
+    all_seqs = {"MVVGTKKYSN", "MLKHKKEIQARPRRTWFQSE", "MKVLL"}
+    assert set(retried) == all_seqs - {str(done["sequence"].seq)}
+    sequences = get_run_metadata(run_id)["sequences"]
+    assert sequences[str(done["sequence"].seq)]["status"] == "complete"
+    for seq, si in retried.items():
+        assert si["sequence"].id == sequences[seq]["sequence_id"]
+        assert si["seq_uuid"] == sequences[seq]["seq_uuid"]
+        assert sequences[seq]["job_id"] in job_ids
+
+    worker.finish_all()
+    assert backend.retry_pending_sequences.local(run_id) == []

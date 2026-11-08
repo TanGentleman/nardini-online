@@ -45,55 +45,37 @@ VOLUME_DIR = get_volume_dir()
     timeout=TIMEOUT_SECONDS,
     scaledown_window=5,
 )
-def retry_pending_sequences(run_id: str):
-    """Retry processing for sequences that are still pending."""
-    from backend_utils.utils import create_seqrecord
-    from shared_utils.schemas import SequenceData
+def retry_pending_sequences(run_id: str) -> List[str]:
+    """Respawn a worker for each sequence of the run that has no result yet."""
+    from Bio.Seq import Seq
+    from Bio.SeqRecord import SeqRecord
 
-    progress_data = get_run_metadata(run_id)
-
-    if progress_data.get("status") == "complete":
+    vol.reload()
+    run_metadata = get_run_metadata(run_id)
+    if run_metadata["status"] == "complete":
         logger.warning(f"Run {run_id} is already complete, skipping retry")
-        return
+        return []
 
-    # NOTE: This function will be refactored if errors persist
-    sequences_data = progress_data["sequences"]
-    pending_uuids = get_pending_uuids(sequences_data)
-    if not pending_uuids:
-        logger.error(
-            "No pending sequences...run status should have been marked complete!"
-        )
-        return
-    completed_mapping = find_completed_in_cache(pending_uuids)
-    pending_sequence_ids = update_sequences_with_completed(
-        sequences_data, completed_mapping
-    )
-    logger.info(f"Retrying {len(pending_sequence_ids)} pending sequences")
-    logger.info(f"Pending ids: {pending_sequence_ids}")
+    sequences_data = run_metadata["sequences"]
+    completed_mapping = find_completed_in_cache(get_pending_uuids(sequences_data))
+    update_sequences_with_completed(sequences_data, completed_mapping)
+
     job_ids = []
     for seq_str, data in sequences_data.items():
-        if data["status"] == "pending":
-            seq_uuid = data["seq_uuid"]
-            if not seq_uuid:
-                logger.error(f"Sequence {seq_str} has no seq_uuid")
-                continue
-            seq_record = create_seqrecord(seq_str, data.get("sequence_id"))
-            call = process_single_sequence.spawn(
-                SequenceInput(sequence=seq_record, seq_uuid=seq_uuid)
-            )
-            job_ids.append(call.object_id)
-            # Update sequences map with job details for each sequence in the batch
-            sequences_data[seq_str] = SequenceData(
-                start_time=time.time(),
-                end_time=None,
-                seq_uuid=seq_uuid,
-                sequence_id=seq_record.id,
-                status="pending",
-                zip_path=None,
-                job_id=call.object_id,
-            )
-    logger.info(f"Spawned {len(job_ids)} jobs. Ids: {job_ids}")
-    return
+        if data["status"] != "pending" or not data["seq_uuid"]:
+            continue
+        record = SeqRecord(Seq(seq_str), id=data["sequence_id"], description="")
+        call = process_single_sequence.spawn(
+            SequenceInput(sequence=record, seq_uuid=data["seq_uuid"])
+        )
+        data["job_id"] = call.object_id
+        data["start_time"] = time.time()
+        job_ids.append(call.object_id)
+
+    write_run_metadata_to_volume(run_id, run_metadata)
+    vol.commit()
+    logger.info(f"Retry for {run_id} spawned {len(job_ids)} jobs: {job_ids}")
+    return job_ids
 
 
 ###
@@ -539,10 +521,13 @@ def fastapi_app():
     )
     async def retry_sequences(run_id: str):
         """Retry processing for sequences that are still pending."""
-        if not run_id:
-            raise HTTPException(status_code=400, detail="Run ID is required")
-        # retry_pending_sequences.spawn(run_id)
-        logger.info(type(RetryResponse))
+        try:
+            uuid.UUID(run_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid run_id format")
+        if not get_run_json_path(run_id).exists():
+            raise HTTPException(status_code=404, detail="Run not found")
+        retry_pending_sequences.spawn(run_id)
         return RetryResponse(run_id=run_id, status="retry_submitted")
 
     return api

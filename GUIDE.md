@@ -291,7 +291,7 @@ src/
 - Check if the run metadata exists in the Modal Volume
 
 #### 2. Processing Stuck in "Pending"
-- `/retry/{run_id}` currently only acknowledges the request; it does not respawn jobs
+- `/retry/{run_id}` respawns a worker for each sequence of the run that has no result yet
 - Check Modal dashboard for worker errors
 - Verify sequence format is valid
 
