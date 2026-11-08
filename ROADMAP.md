@@ -79,4 +79,4 @@ uv sync --locked && uv run pytest -q
 - The Colab notebook lives in Drive; only the repo copy was checked.
 - `-7` moves the web image from fastapi 0.115 to 0.162 and Python 3.12.
   Tested offline only; check `/health` and one upload after redeploying.
-- The `worker` CI job has not run on GitHub yet (about 3 minutes locally).
+- The `worker` CI job has not run on GitHub yet (about 2 minutes locally).

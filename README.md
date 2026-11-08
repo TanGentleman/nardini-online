@@ -31,7 +31,7 @@ workers and volume with fakes. They need no Modal account and no network.
 
 The real-worker test runs NARDINI on two sample IDRs and merges the zips. It
 needs the worker image's Python 3.9 stack (NARDINI 1.1.1 requires
-`scipy<1.7`) and takes about 3 minutes:
+`scipy<1.7`) and takes about 2 minutes:
 
 ```bash
 uv venv -p 3.9 .venv-worker
