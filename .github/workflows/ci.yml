@@ -21,3 +21,17 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check src tests
       - run: uv run pytest -q
+
+  worker:
+    # Real NARDINI on the worker image's Python 3.9 stack (about 3 minutes).
+    runs-on: ubuntu-latest
+    env:
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.9"
+      - run: uv venv .venv-worker
+      - run: uv pip install -p .venv-worker -r tests/requirements-worker.txt
+      - run: .venv-worker/bin/python -m pytest tests/test_worker.py -q

@@ -15,8 +15,9 @@ notebook; nobody installs anything.
   fails with `ModuleNotFoundError: No module named 'app'`; from `src/`,
   `modal deploy app/backend.py` gets as far as the auth check.
 - NARDINI 1.1.1 still installs on Python 3.9 with `numpy==1.19.5` (the
-  worker image pins) and produces the zip layout the merge code expects
-  (checked with a 200-scramble run).
+  worker image pins) and produces the zip layout the merge code expects:
+  `tests/test_worker.py` runs the worker on two sample IDRs and merges them
+  (about 2.5 minutes; see its docstring for the commands).
 - Dependencies: `modal>=1.1.1` resolves to 1.6.3 and works. Web image pins
   `fastapi==0.115.13` (latest 0.162), `biopython==1.84` (1.88),
   `python-multipart==0.0.20` (0.0.33). Left as is: the deployed image is the
@@ -48,7 +49,7 @@ always off, duplicate helpers in `fastapi_utils`.
   contract with a fake worker), CI, plain README, GUIDE deploy fix, Jupyter
   status fix.
 - `nardini-online-2` (done): cut the noise above (about 1,300 lines).
-- `nardini-online-3` (planned): real NARDINI worker test on Python 3.9.
+- `nardini-online-3` (done): real NARDINI worker test on Python 3.9, own CI job.
 - `nardini-online-4` (planned): fix the bugs above (changes error codes and
   `/retry` behavior).
 - `nardini-online-5` (planned): issue #11, next-step URLs in responses
