@@ -176,6 +176,7 @@ def test_bad_run_ids(client):
     assert client.get("/status/not-a-uuid").status_code == 400
     assert client.get("/download/not-a-uuid").status_code == 400
     assert client.get(f"/status/{uuid.uuid4()}").status_code == 404
+    assert client.get(f"/download/{uuid.uuid4()}").status_code == 404
 
 
 def test_retry_acknowledges(client):

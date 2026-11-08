@@ -472,6 +472,9 @@ def fastapi_app():
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid run_id format")
 
+        if not get_run_json_path(run_id).exists():
+            raise HTTPException(status_code=404, detail="Run not found")
+
         try:
             merged_zip_path = None
             run_metadata = get_run_metadata(run_id)
