@@ -276,6 +276,8 @@ def fastapi_app():
                 # Clean up temporary file
                 if os.path.exists(temp_file_path):
                     os.unlink(temp_file_path)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=400, detail=f"Failed to parse FASTA file: {e}"

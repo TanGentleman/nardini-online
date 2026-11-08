@@ -165,8 +165,7 @@ def test_output_filename_param(client, worker):
     [
         ("notes.txt", FASTA, 400),
         ("empty.fasta", "", 400),
-        # GUIDE.md documents 413, but the parse handler rewraps it as 400.
-        ("big.fasta", ">a\n" + "A" * (backend.MAX_FILE_SIZE + 1), 400),
+        ("big.fasta", ">a\n" + "A" * (backend.MAX_FILE_SIZE + 1), 413),
     ],
 )
 def test_upload_rejects(client, name, text, code):
