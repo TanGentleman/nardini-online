@@ -79,3 +79,15 @@ For `-N`, use `nardini-online-(N-1)..nardini-online-N`.
   `nardini-online/.github` here).
 - Whether the deployed app should keep `requires_proxy_auth=False`
   (public, unauthenticated uploads).
+- `-4` changes error codes (oversize 400 -> 413, unknown download 500 -> 404)
+  and the ids in `master_sequences.tsv`. Check that no lab script depends on
+  the old behavior.
+- `-5` makes `/retry` spend Modal compute; a sequence whose worker is still
+  running gets a second one. Bad or unknown run ids now get 400/404.
+- `-6` returns relative paths (`/status/<id>`), not absolute URLs, because I
+  could not check what scheme Modal's proxy forwards.
+- `-2` removes `modal_backend_stable.py`; if `nardini-backend-stable` is
+  still deployed on Modal, it can be stopped.
+- The Colab notebook lives in Drive; only the repo copy was checked. The web
+  image pins (`fastapi==0.115.13` etc.) were left as deployed.
+- The `worker` CI job has not run on GitHub yet (about 3 minutes locally).
