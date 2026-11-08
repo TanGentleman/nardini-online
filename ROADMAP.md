@@ -22,12 +22,13 @@ notebook; nobody installs anything.
   `fastapi==0.115.13` (latest 0.162), `biopython==1.84` (1.88),
   `python-multipart==0.0.20` (0.0.33). Left as is: the deployed image is the
   contract. `uv.lock` was gitignored; pyproject was named `runFasta`.
-- Bugs found by the tests (fixed on `-4`):
+- Bugs found by the tests (fixed on `-4` unless noted):
   - an oversize upload returns 400, not the documented 413 (the parse handler
     rewraps every HTTPException);
   - `/download/<unknown run>` returns 500 with the volume path in the message;
-  - `/retry` only returns `retry_submitted`; the spawn is commented out and
-    `retry_pending_sequences` never saves what it spawns;
+  - `/retry` only returns `retry_submitted`: the spawn is commented out,
+    `retry_pending_sequences` imports a `create_seqrecord` that does not
+    exist and never saves what it spawns (fixed on `-5`);
   - `master_sequences.tsv` keeps the old sequence id for cached sequences
     while the per-file names get the new one.
 - `notebooks/nardini_jupyter.ipynb` checked for `in_progress`/`completed`,
@@ -50,9 +51,10 @@ always off, duplicate helpers in `fastapi_utils`.
   status fix.
 - `nardini-online-2` (done): cut the noise above (about 1,300 lines).
 - `nardini-online-3` (done): real NARDINI worker test on Python 3.9, own CI job.
-- `nardini-online-4` (planned): fix the bugs above (changes error codes and
-  `/retry` behavior).
-- `nardini-online-5` (planned): issue #11, next-step URLs in responses
+- `nardini-online-4` (done): 413 for oversize uploads, 404 for unknown runs
+  on `/download`, uploaded ids in `master_sequences.tsv`.
+- `nardini-online-5` (planned): make `/retry` respawn pending sequences.
+- `nardini-online-6` (planned): issue #11, next-step URLs in responses
   (new fields only).
 
 ## Apply upstream
