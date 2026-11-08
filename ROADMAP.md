@@ -6,35 +6,19 @@ notebook; nobody installs anything.
 
 ## Status (checked 2026-11-08 against upstream `ddcf372`)
 
-- Live API is down: `curl https://tangentleman--nardini-online-fastapi-app.modal.run/health`
-  returns `404 modal-http: invalid function call` (same for the `-dev` and
-  `nardini-backend-stable` URLs). The Colab notebook link itself loads (200).
-- Code imports and the API runs offline: `fastapi_app.local()` builds the
-  FastAPI app without Modal credentials. `uv run pytest` runs 25 tests on
-  it as of `-6` (the real-worker test is skipped unless NARDINI is
-  installed).
-- `modal deploy src/app/backend.py` from the repo root (as GUIDE.md said)
-  fails with `ModuleNotFoundError: No module named 'app'`; from `src/`,
-  `modal deploy app/backend.py` gets as far as the auth check.
-- NARDINI 1.1.1 still installs on Python 3.9 with `numpy==1.19.5` (the
-  worker image pins) and produces the zip layout the merge code expects:
-  `tests/test_worker.py` runs the worker on two sample IDRs and merges them
-  (about 2.5 minutes; see its docstring for the commands).
-- Dependencies: `modal>=1.1.1` resolves to 1.6.3 and works. Web image pins
-  `fastapi==0.115.13` (latest 0.162), `biopython==1.84` (1.88),
-  `python-multipart==0.0.20` (0.0.33). Left as is: the deployed image is the
-  contract. `uv.lock` was gitignored; pyproject was named `runFasta`.
-- Bugs found by the tests (fixed on `-4` unless noted):
-  - an oversize upload returns 400, not the documented 413 (the parse handler
-    rewraps every HTTPException);
-  - `/download/<unknown run>` returns 500 with the volume path in the message;
-  - `/retry` only returns `retry_submitted`: the spawn is commented out,
-    `retry_pending_sequences` imports a `create_seqrecord` that does not
-    exist and never saves what it spawns (fixed on `-5`);
-  - `master_sequences.tsv` keeps the old sequence id for cached sequences
-    while the per-file names get the new one.
-- `notebooks/nardini_jupyter.ipynb` checked for `in_progress`/`completed`,
-  which the API never returns (fixed on `-1`).
+- Live API is down: `/health` on
+  `https://tangentleman--nardini-online-fastapi-app.modal.run` returns 404.
+- The API runs offline: `fastapi_app.local()` builds the FastAPI app without
+  Modal credentials, and `uv run pytest` runs the API contract against fake
+  workers and a temp-dir volume.
+- Deploy works only from `src/` (`cd src && modal deploy app/backend.py`).
+- `tests/test_worker.py` runs real NARDINI 1.1.1 on two sample IDRs on the
+  Python 3.9 worker stack and merges the zips (about 2 minutes).
+- Dependencies (`-7`): web image and dev group at fastapi 0.162.2,
+  python-multipart 0.0.33, biopython 1.88, web image on Python 3.12; worker
+  at pydantic 2.13.5 and pytest 8.4.2 (the last releases for 3.9). NARDINI
+  1.1.1 requires `scipy<1.7`, which keeps the worker on Python 3.9 and
+  `numpy==1.19.5`.
 
 ## Signal vs noise
 
@@ -59,19 +43,21 @@ always off, duplicate helpers in `fastapi_utils`.
   for bad or unknown run ids instead of a blind `retry_submitted`.
 - `nardini-online-6` (done): issue #11, `status_url` and `download_url` in
   the upload and status responses (new fields only).
+- `nardini-online-7`: current deps and toolchain (Python 3.11+, uv 0.13.7,
+  pinned actions), warnings as errors, a fix for the unclosed file Biopython
+  1.88 leaves in `SeqIO.parse(path)`, a test that the offline pins match the
+  Modal images, README and GUIDE rewritten.
 
 ## Apply upstream
 
 ```bash
-# in kranti-sandbox: patches after the import commit
+# in kranti-sandbox: every patch after the import commit
 base=$(git log --format=%H -1 --grep='^Import nardini-online upstream' origin/nardini-online-1)
-git format-patch --relative=nardini-online "$base"..origin/nardini-online-1 -o /tmp/n1
+git format-patch --relative=nardini-online "$base"..origin/nardini-online-7 -o /tmp/nardini
 # in a clean clone of TanGentleman/nardini-online at ddcf372
-git am /tmp/n1/*.patch
-uv sync --locked && uv run pytest
+git am /tmp/nardini/*.patch
+uv sync --locked && uv run pytest -q
 ```
-
-For `-N`, use `origin/nardini-online-(N-1)..origin/nardini-online-N`.
 
 ## Needs Tan
 
@@ -90,6 +76,7 @@ For `-N`, use `origin/nardini-online-(N-1)..origin/nardini-online-N`.
   could not check what scheme Modal's proxy forwards.
 - `-2` removes `modal_backend_stable.py`; if `nardini-backend-stable` is
   still deployed on Modal, it can be stopped.
-- The Colab notebook lives in Drive; only the repo copy was checked. The web
-  image pins (`fastapi==0.115.13` etc.) were left as deployed.
+- The Colab notebook lives in Drive; only the repo copy was checked.
+- `-7` moves the web image from fastapi 0.115 to 0.162 and Python 3.12.
+  Tested offline only; check `/health` and one upload after redeploying.
 - The `worker` CI job has not run on GitHub yet (about 3 minutes locally).
