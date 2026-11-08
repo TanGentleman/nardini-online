@@ -5,23 +5,23 @@ description = "NARDINI IDR analysis as a Modal-hosted REST API, with a Colab not
 authors = [{name = "Tan", email = "tan@sahaya.cloud"}]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "ipykernel>=6.30.1",
-    "modal>=1.1.1",
-    "python-dotenv>=1.1.1",
-    "requests>=2.32.4",
+    "ipykernel>=7.4.0",
+    "modal>=1.6.3",
+    "python-dotenv>=1.2.4",
+    "requests>=2.34.2",
 ]
 
 [dependency-groups]
 # The web-image packages from src/app/common.py, pinned to the same versions,
 # so the API runs offline under pytest.
 dev = [
-    "biopython==1.84",
-    "fastapi==0.115.13",
-    "httpx==0.28.1",
+    "biopython==1.88",
+    "fastapi==0.162.2",
+    "httpx2==2.16.0",
     "pytest==9.2.0",
-    "python-multipart==0.0.20",
+    "python-multipart==0.0.33",
     "ruff==0.17.4",
 ]
 
@@ -29,12 +29,13 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
+filterwarnings = ["error"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["notebooks"]
 
 [tool.ruff.lint]

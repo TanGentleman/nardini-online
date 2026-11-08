@@ -129,7 +129,7 @@ def read_sequences_from_filename(sequence_filename, default_name, verbose=False)
         with open(sequence_filename, "r") as seqfile:
             content = seqfile.read()
             if content.count(">") > 0:
-                seqio_sequences = list(SeqIO.parse(sequence_filename, "fasta"))
+                seqio_sequences = list(SeqIO.parse(StringIO(content), "fasta"))
             else:
                 # This means that there is a list of sequences that are separated
                 # by newlines. We split by any whitespace so as to capture
