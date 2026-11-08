@@ -234,7 +234,9 @@ def merge_zip_archives(
         return new_filename
 
     # helper fxn for mergeZips
-    def add_to_master_sequences_tsv(master_tsv_path: str, tsv_content: str) -> None:
+    def add_to_master_sequences_tsv(
+        master_tsv_path: str, tsv_content: str, sequence_id: str
+    ) -> None:
         """Append rows from a per-zip sequences.tsv into the master TSV, skipping headers."""
 
         lines = tsv_content.splitlines()
@@ -244,6 +246,7 @@ def merge_zip_archives(
                 continue
             columns = re.split(r" {2,}", line)
             if columns and columns[0] != "ID":
+                columns[0] = sequence_id
                 with open(master_tsv_path, "a") as f:
                     f.write("\t".join(columns) + "\n")
 
@@ -334,7 +337,7 @@ def merge_zip_archives(
                                 seq_tsv_content = seq_tsv_file.read().decode("utf-8")
                                 logger.info(f"Processing sequences.tsv from {zip_path}")
                                 add_to_master_sequences_tsv(
-                                    master_tsv_path, seq_tsv_content
+                                    master_tsv_path, seq_tsv_content, new_sequence_id
                                 )
 
             with open(master_tsv_path, "r") as master_tsv_file:

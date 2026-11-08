@@ -42,9 +42,8 @@ def test_merge_renames_files_to_current_ids_and_builds_master_tsv(volume, tmp_pa
     assert "sequences.tsv" not in names
     assert len(names) == 9
     assert master[0].split("\t")[0] == "ID"
-    # Rows keep the id NARDINI wrote into sequences.tsv.
     assert [line.split("\t")[0] for line in master[1:]] == [
-        "OldName_IDR_1",
+        "Drs1_IDR_1_[0-221]",
         "Drs1_IDR_2_[660-751]",
     ]
     assert all(len(line.split("\t")) == 5 for line in master)
