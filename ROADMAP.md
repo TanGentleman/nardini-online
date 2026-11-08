@@ -55,8 +55,8 @@ always off, duplicate helpers in `fastapi_utils`.
   on `/download`, uploaded ids in `master_sequences.tsv`.
 - `nardini-online-5` (done): make `/retry` respawn pending sequences; 400/404
   for bad or unknown run ids instead of a blind `retry_submitted`.
-- `nardini-online-6` (planned): issue #11, next-step URLs in responses
-  (new fields only).
+- `nardini-online-6` (done): issue #11, `status_url` and `download_url` in
+  the upload and status responses (new fields only).
 
 ## Apply upstream
 

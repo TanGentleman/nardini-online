@@ -375,6 +375,8 @@ def fastapi_app():
             status="submitted" if novel_sequences else "ready",
             message=f"Successfully uploaded {original_filename} with {len(novel_sequences)}/{total_sequence_count} novel sequences.",
             job_ids=job_ids,
+            status_url=f"/status/{run_id}",
+            download_url=None if novel_sequences else f"/download/{run_id}",
         )
 
     # TODO: Add stale check for failed jobs (by excessive time or job_id data.)
@@ -400,7 +402,10 @@ def fastapi_app():
             # If the run is already complete we can short-circuit the work below.
             if progress_data["status"] == "complete":
                 return StatusResponse(
-                    run_id=run_id, status="complete", pending_sequences=[]
+                    run_id=run_id,
+                    status="complete",
+                    pending_sequences=[],
+                    download_url=f"/download/{run_id}",
                 )
 
             # 1. Determine which sequences are still pending.
@@ -422,6 +427,7 @@ def fastapi_app():
                     run_id=run_id,
                     status="pending",
                     pending_sequences=pending_sequence_ids,
+                    download_url=None,
                 )
 
             # 4. If no pending sequences remain, mark the run as complete.
@@ -432,7 +438,10 @@ def fastapi_app():
             write_run_metadata_to_volume(run_id, progress_data)
             vol.commit()
             return StatusResponse(
-                run_id=run_id, status="complete", pending_sequences=[]
+                run_id=run_id,
+                status="complete",
+                pending_sequences=[],
+                download_url=f"/download/{run_id}",
             )
 
         except HTTPException:

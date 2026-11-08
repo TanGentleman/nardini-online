@@ -124,13 +124,16 @@ Content-Type: multipart/form-data
   "run_id": "uuid-string",
   "status": "submitted|ready",
   "message": "Success message",
-  "job_ids": ["job1", "job2", "..."]
+  "job_ids": ["job1", "job2", "..."],
+  "status_url": "/status/uuid-string",
+  "download_url": null
 }
 ```
 
 **Status Values**:
 - `submitted`: Novel sequences are being processed
-- `ready`: All sequences were cached (no processing needed)
+- `ready`: All sequences were cached (no processing needed); `download_url`
+  is set
 
 #### Check Job Status
 ```http
@@ -142,9 +145,13 @@ GET /status/{run_id}
 {
   "run_id": "uuid-string",
   "status": "pending|complete",
-  "pending_sequences": ["seq_id1", "seq_id2"]
+  "pending_sequences": ["seq_id1", "seq_id2"],
+  "download_url": "/download/uuid-string"
 }
 ```
+
+`download_url` is `null` until the status is `complete`. Both URLs are paths
+relative to the API base URL.
 
 #### Download Results
 ```http

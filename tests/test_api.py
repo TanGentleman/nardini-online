@@ -87,11 +87,12 @@ def test_upload_status_download(client, worker):
     res = upload(client)
     assert res.status_code == 200
     body = res.json()
-    assert set(body) == {"run_id", "status", "message", "job_ids"}
-    assert body["status"] == "submitted"
-    assert body["job_ids"] == ["fc-1"]
     run_id = body["run_id"]
     uuid.UUID(run_id)
+    assert body["status"] == "submitted"
+    assert body["job_ids"] == ["fc-1"]
+    assert body["status_url"] == f"/status/{run_id}"
+    assert body["download_url"] is None
 
     # Longest sequences are spawned first.
     assert [si["sequence"].id for si in worker.batches[0]] == [
@@ -114,6 +115,7 @@ def test_upload_status_download(client, worker):
         "run_id": run_id,
         "status": "complete",
         "pending_sequences": [],
+        "download_url": f"/download/{run_id}",
     }
 
     res = client.get(f"/download/{run_id}")
@@ -140,6 +142,7 @@ def test_reupload_is_served_from_cache(client, worker):
     second = upload(client, name="again.fa").json()
     assert second["status"] == "ready"
     assert second["job_ids"] == []
+    assert second["download_url"] == f"/download/{second['run_id']}"
     assert len(worker.batches) == 1
     assert client.get(f"/status/{second['run_id']}").json()["status"] == "complete"
     res = client.get(f"/download/{second['run_id']}")

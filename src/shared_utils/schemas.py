@@ -23,12 +23,15 @@ class UploadFastaResponse(TypedDict):
     status: Literal["submitted", "ready"]
     message: str
     job_ids: List[str]
+    status_url: str
+    download_url: Optional[str]
 
 
 class StatusResponse(TypedDict):
     run_id: str
     status: Literal["pending", "complete"]
     pending_sequences: List[str]
+    download_url: Optional[str]
 
 
 class RetryResponse(TypedDict):
