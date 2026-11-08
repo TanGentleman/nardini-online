@@ -34,6 +34,6 @@ jobs:
         with:
           version: "0.13.7"
           python-version: "3.9"
-      - run: uv venv .venv-worker
+      - run: uv venv -p 3.9 .venv-worker
       - run: uv pip install -p .venv-worker -r tests/requirements-worker.txt
       - run: .venv-worker/bin/python -m pytest tests/test_worker.py -q

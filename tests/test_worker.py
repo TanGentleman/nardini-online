@@ -2,7 +2,7 @@
 
 uv venv -p 3.9 .venv-worker
 uv pip install -p .venv-worker -r tests/requirements-worker.txt
-.venv-worker/bin/python -m pytest tests/test_worker.py
+MPLBACKEND=Agg .venv-worker/bin/python -m pytest tests/test_worker.py -q
 """
 
 import zipfile
