@@ -12,6 +12,13 @@ import pytest
 
 pytest.importorskip("nardini")
 
+# NARDINI's pinned matplotlib and scipy (Python 3.9) warn on pyparsing 3 and on
+# constant scrambles; pyproject.toml turns warnings into errors.
+pytestmark = [
+    pytest.mark.filterwarnings("ignore::DeprecationWarning:matplotlib"),
+    pytest.mark.filterwarnings("ignore::RuntimeWarning:scipy"),
+]
+
 from backend_utils.utils import _process_one_sequence_to_volume  # noqa: E402
 from fastapi_utils.utils import (  # noqa: E402
     merge_zip_archives,
