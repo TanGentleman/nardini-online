@@ -1,7 +1,7 @@
 # nardini-online: technical guide
 
-[README.md](README.md) covers setup, commands, environment variables and
-boundaries. This file is the API and storage reference.
+[IMPLEMENTATION.md](IMPLEMENTATION.md) covers requirements, commands,
+environment variables, tests and limits. This file is the API and storage reference.
 
 ## Processing flow
 

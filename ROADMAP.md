@@ -47,13 +47,14 @@ always off, duplicate helpers in `fastapi_utils`.
   pinned actions), warnings as errors, a fix for the unclosed file Biopython
   1.88 leaves in `SeqIO.parse(path)`, a test that the offline pins match the
   Modal images, README and GUIDE rewritten.
+- `nardini-online-8`: README cut to 27 words; details moved to IMPLEMENTATION.md.
 
 ## Apply upstream
 
 ```bash
 # in kranti-sandbox: every patch after the import commit
 base=$(git log --format=%H -1 --grep='^Import nardini-online upstream' origin/nardini-online-1)
-git format-patch --relative=nardini-online "$base"..origin/nardini-online-7 -o /tmp/nardini
+git format-patch --relative=nardini-online "$base"..origin/nardini-online-8 -o /tmp/nardini
 # in a clean clone of TanGentleman/nardini-online at ddcf372
 git am /tmp/nardini/*.patch
 uv sync --locked && uv run pytest -q
