@@ -81,9 +81,10 @@ DEPLOYED_URL=your_custom_url      # Override default deployment URL
    cd nardini-online
    ```
 
-3. **Deploy to Modal**:
+3. **Deploy to Modal** (from `src/`, so `app.common` and the
+   `add_local_dir` paths resolve):
    ```bash
-   modal deploy src/app/backend.py
+   cd src && modal deploy app/backend.py
    ```
 
 4. **Get API URL**:
@@ -233,16 +234,15 @@ Each sequence result zip contains:
 
 ### Local Development
 
-1. **Install Dependencies**:
+1. **Install Dependencies** (with [uv](https://docs.astral.sh/uv/)):
    ```bash
-   pip install -e .
-   # or for development with linting
-   pip install -e ".[dev]"
+   uv sync
    ```
 
-2. **Run Local Tests**:
+2. **Run Local Tests** (offline, no Modal account needed):
    ```bash
-   modal run src/app/backend.py::test_function
+   uv run pytest
+   uv run ruff check . && uv run ruff format --check src tests
    ```
 
 3. **Development vs Production URLs**:
@@ -256,7 +256,7 @@ Each sequence result zip contains:
 
 5. **Deploy to Development**:
    ```bash
-   modal deploy --name your-app-dev src/app/backend.py
+   cd src && modal deploy --name your-app-dev app/backend.py
    ```
 
 ### Project Structure
@@ -292,7 +292,7 @@ src/
 - Check if the run metadata exists in the Modal Volume
 
 #### 2. Processing Stuck in "Pending"
-- Use `/retry/{run_id}` endpoint to restart failed jobs
+- `/retry/{run_id}` currently only acknowledges the request; it does not respawn jobs
 - Check Modal dashboard for worker errors
 - Verify sequence format is valid
 

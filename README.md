@@ -1,81 +1,57 @@
 # Nardini Online
 
-🧬 **Blazing fast protein analysis**
+Runs [NARDINI](https://github.com/mshinn23/nardini) (Cohan et al., 2021) on a
+FASTA file of intrinsically disordered regions (IDRs) and returns one zip of
+`.tsv` and `.png` results. Built for the Woolford Lab at CMU. Sequences run in
+parallel on [Modal](https://modal.com), and results are cached per sequence,
+so a sequence seen before is not recomputed.
 
-We provide a simple, accessible interface for running **NARDINI** - a powerful tool for analyzing Intrinsically Disordered Regions (IDRs) in proteins. You can use our API for programmatic access, or our Google COLAB notebook for ease of use.
+## Use it
 
-## 🚀 Features
+Open the [Colab notebook](https://colab.research.google.com/drive/1jKDu1AfOHI-4BM1hHELIDFQCqbPz86M9),
+upload a FASTA file, and run the cells. You can close the notebook while the
+analysis runs and come back for the results.
 
-### ⚡ High Performance
-- **Parallel Processing**: Processes multiple sequences simultaneously using Modal's distributed computing
-- **Smart Caching**: Previously analyzed sequences are cached to avoid reprocessing
-- **Scalable Infrastructure**: Runs on Modal's cloud platform for unlimited scalability
+Input looks like [`data/fasta_inputs/Halophile-pHtolerant-yeast-first16.fasta`](data/fasta_inputs/Halophile-pHtolerant-yeast-first16.fasta):
 
-### 🎯 User-Friendly Interface
-- **Jupyter Notebook**: Interactive notebook with step-by-step guidance
-- **REST API**: Programmatic access for integration with other tools
-- **Real-time Progress**: Monitor analysis progress with live updates
-- **Easy Downloads**: Automated result retrieval and organization
+```
+>Drs1_IDR_2_[660-751]
+MLKHKKEIQARPRRTWFQSESDKKNSKVLGALSRNKKVTNSKKRKREEAKADGNGARSYRKTKTDRIADQERTFKKQKSTNSNKKKGFKSR
+```
 
-### 📊 Comprehensive Results
-- **TSV Data Files**: Detailed statistical results for each sequence
-- **PNG Visualizations**: Plots and charts for data interpretation
-- **Merged Reports**: Combined results across all analyzed sequences
-- **Organized Output**: Structured file organization for easy access
+## REST API
 
-## 🚀 Getting Started
+The notebook calls this API. Replace `$URL` with the deployed app URL.
 
-**Ready to analyze your protein sequences?** 
+```bash
+curl -F "file=@sequences.fasta" "$URL/upload_fasta"   # -> {"run_id": ..., "status": "submitted" | "ready", ...}
+curl "$URL/status/$RUN_ID"                             # -> {"status": "pending" | "complete", "pending_sequences": [...]}
+curl -OJ "$URL/download/$RUN_ID"                       # -> <fasta name>_results.zip
+```
 
-Simply open our **[Google Colab Notebook](https://colab.research.google.com/drive/1jKDu1AfOHI-4BM1hHELIDFQCqbPz86M9)** - no installation required! The notebook provides a step-by-step walkthrough that will guide you through the entire process.
+See [GUIDE.md](GUIDE.md) for every endpoint and deployment.
 
-*For detailed setup and deployment instructions, see our [Installation Guide](GUIDE.md).*
+## Develop
 
-## 📖 How to Use Nardini Online
+```bash
+uv sync
+uv run pytest            # offline: fakes Modal and the NARDINI worker
+cd src && modal deploy app/backend.py
+```
 
-### 📔 Interactive Notebook (Recommended for Lab Members)
+- `src/app/backend.py`: the Modal app (FastAPI web function and NARDINI workers)
+- `src/app/common.py`: Modal images, volume and limits
+- `src/shared_utils`, `src/fastapi_utils`, `src/backend_utils`: helpers for each image
+- `notebooks/nardini_colab.ipynb`: copy of the Colab notebook
 
-The easiest way to get started is through our Google Colab notebook:
+## Credits
 
-1. **Open the Colab notebook** (link provided above)
-2. **Upload your FASTA file** containing protein sequences
-3. **Run the analysis** - the notebook will handle everything automatically
-4. **Monitor progress** in real-time as sequences are processed
-5. **Download your results** - get comprehensive analysis files and visualizations
+Made by Tanuj Vasudeva and Ethan Caine, 2025. Thanks to Dr. John Woolford at
+Carnegie Mellon University for supporting the project, Modal for hosting, and
+Katherine Parry for advice.
 
-The notebook is designed to be beginner-friendly with clear explanations at each step.
+Cohan, M. C., Shinn, M. K., Lalmansingh, J. M., & Pappu, R. V. (2021).
+Uncovering non-random binary patterns within sequences of intrinsically
+disordered proteins. *Journal of Molecular Biology*, 434(2), 167373.
 
-### 🔧 For Advanced Users
-
-If you prefer working with APIs or integrating Nardini Online into your own tools, we also provide a REST API interface. See our [Technical Documentation](GUIDE.md) for detailed API information.
-
-## 📊 Simple Workflow
-
-1. **Prepare your FASTA file** - Make sure your protein sequences are in FASTA format
-2. **Open the Colab notebook** - Click the link above to get started
-3. **Upload and analyze** - Follow the guided steps in the notebook
-4. **Get your results** - Download comprehensive analysis files and visualizations
-5. **Interpret findings** - Review the statistical analysis and plots to understand your protein patterns
-
-## 🙏 Credits
-
-**✨ Created by Tanuj Vasudeva and Ethan Caine, 2025 ✨**
-
-### Acknowledgments
-
-- **Dr. John Woolford** at Carnegie Mellon University for project support
-- **Modal** for hosting infrastructure
-- **Katherine Parry** for helpful advice
-- **NARDINI Authors** for the original analysis tool
-
-## 📚 References
-
-Cohan, M. C., Shinn, M. K., Lalmansingh, J. M., & Pappu, R. V. (2021). Uncovering non-random binary patterns within sequences of intrinsically disordered proteins. *Journal of Molecular Biology*, 434(2), 167373.
-
-## 📄 License
-
-This project is licensed under the MIT License. We hope to advance scientific research by making our tools freely accessible to the global research community.
-
----
-
-**Need help?** Check out the demo notebook for step-by-step instructions, or refer to the API documentation in [GUIDE.md](GUIDE.md) for programmatic usage.
+MIT License.
