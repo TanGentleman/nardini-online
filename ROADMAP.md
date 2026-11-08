@@ -10,7 +10,9 @@ notebook; nobody installs anything.
   returns `404 modal-http: invalid function call` (same for the `-dev` and
   `nardini-backend-stable` URLs). The Colab notebook link itself loads (200).
 - Code imports and the API runs offline: `fastapi_app.local()` builds the
-  FastAPI app without Modal credentials. `uv run pytest` runs 24 tests on it.
+  FastAPI app without Modal credentials. `uv run pytest` runs 25 tests on
+  it as of `-6` (the real-worker test is skipped unless NARDINI is
+  installed).
 - `modal deploy src/app/backend.py` from the repo root (as GUIDE.md said)
   fails with `ModuleNotFoundError: No module named 'app'`; from `src/`,
   `modal deploy app/backend.py` gets as far as the auth check.
@@ -62,14 +64,14 @@ always off, duplicate helpers in `fastapi_utils`.
 
 ```bash
 # in kranti-sandbox: patches after the import commit
-base=$(git log --format=%H -1 --grep='^Import nardini-online upstream' nardini-online-1)
-git format-patch --relative=nardini-online "$base"..nardini-online-1 -o /tmp/n1
+base=$(git log --format=%H -1 --grep='^Import nardini-online upstream' origin/nardini-online-1)
+git format-patch --relative=nardini-online "$base"..origin/nardini-online-1 -o /tmp/n1
 # in a clean clone of TanGentleman/nardini-online at ddcf372
 git am /tmp/n1/*.patch
 uv sync --locked && uv run pytest
 ```
 
-For `-N`, use `nardini-online-(N-1)..nardini-online-N`.
+For `-N`, use `origin/nardini-online-(N-1)..origin/nardini-online-N`.
 
 ## Needs Tan
 
