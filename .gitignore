@@ -2,7 +2,8 @@
 __pycache__/
 *.egg-info/
 .venv/
+.venv-worker/
 .env
 data/
-# We can later commit this and prefer uv sync
-uv.lock
+.pytest_cache/
+.ruff_cache/

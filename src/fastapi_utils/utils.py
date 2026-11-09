@@ -9,10 +9,8 @@ from typing import Dict, List
 from uuid import uuid4
 
 from shared_utils.file_utils import (
-    clean_filename,
     get_run_metadata,
     get_runs_dir,
-    get_zip_by_fasta_dir,
     get_zip_by_idr_dir,
 )
 from shared_utils.schemas import SequenceData, SequencesMapping
@@ -131,7 +129,7 @@ def read_sequences_from_filename(sequence_filename, default_name, verbose=False)
         with open(sequence_filename, "r") as seqfile:
             content = seqfile.read()
             if content.count(">") > 0:
-                seqio_sequences = list(SeqIO.parse(sequence_filename, "fasta"))
+                seqio_sequences = list(SeqIO.parse(StringIO(content), "fasta"))
             else:
                 # This means that there is a list of sequences that are separated
                 # by newlines. We split by any whitespace so as to capture
@@ -236,9 +234,10 @@ def merge_zip_archives(
         return new_filename
 
     # helper fxn for mergeZips
-    def add_to_master_sequences_tsv(master_tsv_path: str, tsv_content: str) -> None:
+    def add_to_master_sequences_tsv(
+        master_tsv_path: str, tsv_content: str, sequence_id: str
+    ) -> None:
         """Append rows from a per-zip sequences.tsv into the master TSV, skipping headers."""
-        import re
 
         lines = tsv_content.splitlines()
         for line in lines:
@@ -247,6 +246,7 @@ def merge_zip_archives(
                 continue
             columns = re.split(r" {2,}", line)
             if columns and columns[0] != "ID":
+                columns[0] = sequence_id
                 with open(master_tsv_path, "a") as f:
                     f.write("\t".join(columns) + "\n")
 
@@ -337,7 +337,7 @@ def merge_zip_archives(
                                 seq_tsv_content = seq_tsv_file.read().decode("utf-8")
                                 logger.info(f"Processing sequences.tsv from {zip_path}")
                                 add_to_master_sequences_tsv(
-                                    master_tsv_path, seq_tsv_content
+                                    master_tsv_path, seq_tsv_content, new_sequence_id
                                 )
 
             with open(master_tsv_path, "r") as master_tsv_file:
@@ -354,35 +354,3 @@ def merge_zip_archives(
         raise ValueError("Zip creation failed!")
     logger.info(f"Merged zip file created at {destination_filepath}")
     return destination_filepath
-
-
-def ensure_volume_directories() -> bool:
-    """Ensure the required directories exist in the mounted volume."""
-    was_created = False
-    for directory in [get_zip_by_fasta_dir(), get_zip_by_idr_dir(), get_runs_dir()]:
-        if not directory.exists():
-            logger.warning(f"Volume directory {directory} does not exist, creating it")
-            directory.mkdir(parents=True, exist_ok=True)
-            was_created = True
-    return was_created
-
-
-def sanitize_output_filename(filename: str) -> str:
-    if not filename:
-        raise ValueError("Filename is required")
-    if len(filename) > 250:
-        filename = filename[:250]
-    # Remove any potential .fasta extension
-    suffix = filename.split(".")[-1]
-    if suffix in ["fasta", "fa", "fas"]:
-        suffix_len = len(suffix) + 1
-        filename = filename[:-suffix_len]
-    if not filename.endswith(".zip"):
-        filename = filename + ".zip"
-    return clean_filename(filename)
-
-
-def replace_idr_ranges(content: str) -> str:
-    """Replace IDR range format from '[n, m]' to '[n-m]' in FASTA headers."""
-    formatted_content = re.sub(r"\[(\d+),\s*(\d+)\]", r"[\1-\2]", content)
-    return formatted_content

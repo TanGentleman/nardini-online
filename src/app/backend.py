@@ -2,9 +2,9 @@ import logging
 import os
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import List
-import uuid
 from uuid import uuid4
 
 import modal
@@ -21,11 +21,10 @@ from shared_utils.file_utils import (
     ensure_volume_directories,
     get_run_json_path,
     get_run_metadata,
-    get_runs_dir,
     get_volume_dir,
     get_zip_by_fasta_dir,
-    write_run_metadata_to_volume,
     save_fasta_to_volume,
+    write_run_metadata_to_volume,
 )
 from shared_utils.schemas import SequenceInput
 from shared_utils.utils import (
@@ -46,74 +45,37 @@ VOLUME_DIR = get_volume_dir()
     timeout=TIMEOUT_SECONDS,
     scaledown_window=5,
 )
-def retry_pending_sequences(run_id: str):
-    """Retry processing for sequences that are still pending."""
-    from backend_utils.utils import create_seqrecord
-    from shared_utils.schemas import SequenceData
+def retry_pending_sequences(run_id: str) -> List[str]:
+    """Respawn a worker for each sequence of the run that has no result yet."""
+    from Bio.Seq import Seq
+    from Bio.SeqRecord import SeqRecord
 
-    progress_data = get_run_metadata(run_id)
-
-    if progress_data.get("status") == "complete":
+    vol.reload()
+    run_metadata = get_run_metadata(run_id)
+    if run_metadata["status"] == "complete":
         logger.warning(f"Run {run_id} is already complete, skipping retry")
-        return
+        return []
 
-    # NOTE: This function will be refactored if errors persist
-    sequences_data = progress_data["sequences"]
-    pending_uuids = get_pending_uuids(sequences_data)
-    if not pending_uuids:
-        logger.error(
-            "No pending sequences...run status should have been marked complete!"
-        )
-        return
-    completed_mapping = find_completed_in_cache(pending_uuids)
-    pending_sequence_ids = update_sequences_with_completed(
-        sequences_data, completed_mapping
-    )
-    logger.info(f"Retrying {len(pending_sequence_ids)} pending sequences")
-    logger.info(f"Pending ids: {pending_sequence_ids}")
+    sequences_data = run_metadata["sequences"]
+    completed_mapping = find_completed_in_cache(get_pending_uuids(sequences_data))
+    update_sequences_with_completed(sequences_data, completed_mapping)
+
     job_ids = []
     for seq_str, data in sequences_data.items():
-        if data["status"] == "pending":
-            seq_uuid = data["seq_uuid"]
-            if not seq_uuid:
-                logger.error(f"Sequence {seq_str} has no seq_uuid")
-                continue
-            seq_record = create_seqrecord(seq_str, data.get("sequence_id"))
-            call = process_single_sequence.spawn(
-                SequenceInput(sequence=seq_record, seq_uuid=seq_uuid)
-            )
-            job_ids.append(call.object_id)
-            # Update sequences map with job details for each sequence in the batch
-            sequences_data[seq_str] = SequenceData(
-                start_time=time.time(),
-                end_time=None,
-                seq_uuid=seq_uuid,
-                sequence_id=seq_record.id,
-                status="pending",
-                zip_path=None,
-                job_id=call.object_id,
-            )
-    logger.info(f"Spawned {len(job_ids)} jobs. Ids: {job_ids}")
-    return
-
-
-@app.function(
-    image=nardini_image,
-    volumes={str(VOLUME_DIR): vol},
-)
-def migrate_run_metadata() -> None:
-    """Modify the run metadata all JSON files."""
-    for json_file in get_runs_dir().glob("*.json"):
-        run_metadata = get_run_metadata(json_file.stem)
-        run_metadata["output_filename"] = sanitize_output_filename(
-            run_metadata["output_filename"]
+        if data["status"] != "pending" or not data["seq_uuid"]:
+            continue
+        record = SeqRecord(Seq(seq_str), id=data["sequence_id"], description="")
+        call = process_single_sequence.spawn(
+            SequenceInput(sequence=record, seq_uuid=data["seq_uuid"])
         )
-        logger.info(
-            f"Modifying run metadata for {json_file.stem} to {run_metadata['output_filename']}"
-        )
-        write_run_metadata_to_volume(json_file.stem, run_metadata)
+        data["job_id"] = call.object_id
+        data["start_time"] = time.time()
+        job_ids.append(call.object_id)
+
+    write_run_metadata_to_volume(run_id, run_metadata)
     vol.commit()
-    return
+    logger.info(f"Retry for {run_id} spawned {len(job_ids)} jobs: {job_ids}")
+    return job_ids
 
 
 ###
@@ -207,7 +169,6 @@ def fastapi_app():
         get_completed_zip_paths,
         merge_zip_archives,
         read_sequences_from_filename,
-        replace_idr_ranges,
     )
     from shared_utils.schemas import (
         HealthResponse,
@@ -273,11 +234,6 @@ def fastapi_app():
             # Parse sequences using the reference code with a temporary file
             file_content = content.decode("utf-8")
 
-            # OPTIONAL: Replace IDR ranges in the FASTA file
-            REPLACE_IDR_RANGES = False
-            if REPLACE_IDR_RANGES:
-                file_content = replace_idr_ranges(file_content)
-
             # Create temporary file to use with read_sequences_from_filename
             with tempfile.NamedTemporaryFile(
                 mode="w", delete=False, suffix=".fasta"
@@ -302,6 +258,8 @@ def fastapi_app():
                 # Clean up temporary file
                 if os.path.exists(temp_file_path):
                     os.unlink(temp_file_path)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=400, detail=f"Failed to parse FASTA file: {e}"
@@ -342,50 +300,15 @@ def fastapi_app():
             logger.info(f"Spawning {len(novel_sequences)} sequences in batches of 16")
             logger.debug(f"Starting to spawn at {time.time()}")
 
-            USE_BATCH_PROCESSING = True
             BATCH_SIZE = 16
-            if USE_BATCH_PROCESSING:
 
-                def chunked(seq_list, size):
-                    for i in range(0, len(seq_list), size):
-                        yield seq_list[i : i + size]
+            def chunked(seq_list, size):
+                for i in range(0, len(seq_list), size):
+                    yield seq_list[i : i + size]
 
-                for batch in chunked(novel_sequences, BATCH_SIZE):
-                    batch_inputs: List[SequenceInput] = []
-                    for seq in batch:
-                        seq_str = str(seq.seq)
-                        seq_data = sequences_data[seq_str]
-                        assert seq_data.get("status") == "pending", (
-                            f"Sequence {seq.id} is not pending"
-                        )
-                        assert seq_data.get("seq_uuid"), (
-                            f"Sequence {seq.id} has no seq_uuid"
-                        )
-                        seq_uuid = seq_data.get("seq_uuid")
-                        batch_inputs.append(
-                            SequenceInput(sequence=seq, seq_uuid=seq_uuid)
-                        )
-
-                    logger.info(f"Spawning batch of {len(batch_inputs)} sequences")
-                    call = process_16_sequences.spawn(batch_inputs)
-                    job_ids.append(call.object_id)
-
-                    # Update sequences map with job details for each sequence in the batch
-                    for seq in batch:
-                        seq_str = str(seq.seq)
-                        seq_uuid = sequences_data[seq_str]["seq_uuid"]
-                        sequences_data[seq_str] = SequenceData(
-                            start_time=time.time(),
-                            end_time=None,
-                            seq_uuid=seq_uuid,
-                            sequence_id=seq.id,
-                            status="pending",
-                            zip_path=None,
-                            job_id=call.object_id,
-                        )
-            else:
-                # Spawn single sequence jobs
-                for seq in novel_sequences:
+            for batch in chunked(novel_sequences, BATCH_SIZE):
+                batch_inputs: List[SequenceInput] = []
+                for seq in batch:
                     seq_str = str(seq.seq)
                     seq_data = sequences_data[seq_str]
                     assert seq_data.get("status") == "pending", (
@@ -395,10 +318,16 @@ def fastapi_app():
                         f"Sequence {seq.id} has no seq_uuid"
                     )
                     seq_uuid = seq_data.get("seq_uuid")
-                    call = process_single_sequence.spawn(
-                        SequenceInput(sequence=seq, seq_uuid=seq_uuid)
-                    )
-                    job_ids.append(call.object_id)
+                    batch_inputs.append(SequenceInput(sequence=seq, seq_uuid=seq_uuid))
+
+                logger.info(f"Spawning batch of {len(batch_inputs)} sequences")
+                call = process_16_sequences.spawn(batch_inputs)
+                job_ids.append(call.object_id)
+
+                # Update sequences map with job details for each sequence in the batch
+                for seq in batch:
+                    seq_str = str(seq.seq)
+                    seq_uuid = sequences_data[seq_str]["seq_uuid"]
                     sequences_data[seq_str] = SequenceData(
                         start_time=time.time(),
                         end_time=None,
@@ -446,6 +375,8 @@ def fastapi_app():
             status="submitted" if novel_sequences else "ready",
             message=f"Successfully uploaded {original_filename} with {len(novel_sequences)}/{total_sequence_count} novel sequences.",
             job_ids=job_ids,
+            status_url=f"/status/{run_id}",
+            download_url=None if novel_sequences else f"/download/{run_id}",
         )
 
     # TODO: Add stale check for failed jobs (by excessive time or job_id data.)
@@ -471,7 +402,10 @@ def fastapi_app():
             # If the run is already complete we can short-circuit the work below.
             if progress_data["status"] == "complete":
                 return StatusResponse(
-                    run_id=run_id, status="complete", pending_sequences=[]
+                    run_id=run_id,
+                    status="complete",
+                    pending_sequences=[],
+                    download_url=f"/download/{run_id}",
                 )
 
             # 1. Determine which sequences are still pending.
@@ -493,6 +427,7 @@ def fastapi_app():
                     run_id=run_id,
                     status="pending",
                     pending_sequences=pending_sequence_ids,
+                    download_url=None,
                 )
 
             # 4. If no pending sequences remain, mark the run as complete.
@@ -503,7 +438,10 @@ def fastapi_app():
             write_run_metadata_to_volume(run_id, progress_data)
             vol.commit()
             return StatusResponse(
-                run_id=run_id, status="complete", pending_sequences=[]
+                run_id=run_id,
+                status="complete",
+                pending_sequences=[],
+                download_url=f"/download/{run_id}",
             )
 
         except HTTPException:
@@ -524,6 +462,9 @@ def fastapi_app():
             uuid.UUID(run_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid run_id format")
+
+        if not get_run_json_path(run_id).exists():
+            raise HTTPException(status_code=404, detail="Run not found")
 
         try:
             merged_zip_path = None
@@ -589,10 +530,13 @@ def fastapi_app():
     )
     async def retry_sequences(run_id: str):
         """Retry processing for sequences that are still pending."""
-        if not run_id:
-            raise HTTPException(status_code=400, detail="Run ID is required")
-        # retry_pending_sequences.spawn(run_id)
-        logger.info(type(RetryResponse))
+        try:
+            uuid.UUID(run_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid run_id format")
+        if not get_run_json_path(run_id).exists():
+            raise HTTPException(status_code=404, detail="Run not found")
+        retry_pending_sequences.spawn(run_id)
         return RetryResponse(run_id=run_id, status="retry_submitted")
 
     return api

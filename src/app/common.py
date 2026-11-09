@@ -14,11 +14,11 @@ app = modal.App(APP_NAME)
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 # Lightweight web image for FastAPI
 web_image = (
-    modal.Image.debian_slim()
+    modal.Image.debian_slim(python_version="3.12")
     .uv_pip_install(
-        "fastapi[standard]==0.115.13",
-        "python-multipart==0.0.20",
-        "biopython==1.84",
+        "fastapi[standard]==0.162.2",
+        "python-multipart==0.0.33",
+        "biopython==1.88",
     )
     .add_local_dir("shared_utils", remote_path="/root/shared_utils")
     .add_local_dir("fastapi_utils", remote_path="/root/fastapi_utils")
@@ -28,7 +28,7 @@ web_image = (
 nardini_image = (
     modal.Image.debian_slim(python_version="3.9")
     .uv_pip_install(
-        "pydantic==2.10.6",
+        "pydantic==2.13.5",
         "numpy==1.19.5",
     )
     .uv_pip_install("nardini==1.1.1")
