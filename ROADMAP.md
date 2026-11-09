@@ -49,17 +49,6 @@ always off, duplicate helpers in `fastapi_utils`.
   Modal images, README and GUIDE rewritten.
 - `nardini-online-8`: README cut to 27 words; details moved to IMPLEMENTATION.md.
 
-## Apply upstream
-
-```bash
-# in kranti-sandbox: every patch after the import commit
-base=$(git log --format=%H -1 --grep='^Import nardini-online upstream' origin/nardini-online-1)
-git format-patch --relative=nardini-online "$base"..origin/nardini-online-8 -o /tmp/nardini
-# in a clean clone of TanGentleman/nardini-online at ddcf372
-git am /tmp/nardini/*.patch
-uv sync --locked && uv run pytest -q
-```
-
 ## Needs Tan
 
 - Redeploy (`cd src && modal deploy app/backend.py`) and check `/health`;
